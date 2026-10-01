@@ -28,7 +28,17 @@ const P = {
   milestones: join(STATE, 'milestones.json'),
   device: join(STATE, 'device.json'),
   pid: join(STATE, 'daemon.pid'),
+  spinner: join(STATE, 'spinner.json'),
 };
+
+const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
+
+// Claude Code's own rotation. We append to it rather than replace it, so the
+// spinner still reads as Claude Code's and our line is an occasional guest.
+const BUILTIN_VERBS = [
+  'Thinking', 'Analyzing', 'Planning', 'Coding',
+  'Testing', 'Debugging', 'Reviewing', 'Refining',
+];
 
 // Business rules stay configurable (TZ section 16). Client-side subset only.
 const DEFAULTS = {
@@ -44,6 +54,7 @@ const DEFAULTS = {
   request_attempts: 3,
   session_ttl_ms: 60 * 60_000,
   milestones_micros: [5e6, 10e6, 25e6, 50e6, 100e6],
+  spinner: true,
 };
 
 // ---------------------------------------------------------------- utilities
@@ -301,24 +312,73 @@ function rotateCurrent(queue, now) {
   return true;
 }
 
-function maybeMilestone(cfg, queue, now) {
-  // Never instead of a paid impression (TZ section 10).
-  if (queue.length > 0) return;
-  const cur = readJson(P.current, null);
-  if (cur && typeof cur.expires_at === 'number' && cur.expires_at > now) return;
-
-  const balance = readJson(P.balance, null);
-  const accrued = Number(balance?.accrued ?? 0);
+/** The milestone to announce, or null. Each threshold fires once, ever. */
+function pendingMilestone(cfg) {
+  const accrued = Number(readJson(P.balance, null)?.accrued ?? 0);
   const shown = readJson(P.milestones, []) ?? [];
   const hit = [...cfg.milestones_micros].reverse().find((m) => accrued >= m && !shown.includes(m));
-  if (hit === undefined) return;
+  return hit === undefined ? null : hit;
+}
 
-  writeJson(P.current, {
-    creative_id: null,
-    text: `TICK · вы заработали $${Math.floor(hit / 1e6)}`,
-    expires_at: now + 60_000,
-  });
-  writeJson(P.milestones, [...shown, hit]);
+/**
+ * The spinner carries the user's own line and their milestones — never an ad.
+ *
+ * This is the one place we write to someone else's settings file after install,
+ * so the rules are strict. We only ever append to Claude Code's own verbs. We
+ * write only when the resulting array actually differs, which in practice means
+ * once when a line is set and once more per milestone, not every cycle. And we
+ * remember exactly what we wrote: if the value on disk is not ours, the user
+ * (or another tool) owns the key and we never touch it again.
+ *
+ * No impressions are counted here and nothing is billed. The surface has no way
+ * to report what it displayed, so charging for it would be charging for a guess.
+ */
+function syncSpinner(cfg) {
+  const state = readJson(P.spinner, null);
+  const ours = Array.isArray(state?.wrote) ? state.wrote : null;
+
+  const settings = readJson(SETTINGS, null);
+  if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) return;
+
+  const current = settings.spinnerVerbs;
+  const theirs = current !== undefined && (ours === null || JSON.stringify(current) !== JSON.stringify(ours));
+  if (theirs) {
+    // Somebody else owns this key. Record that and stop trying, for good.
+    if (state?.yielded !== true) writeJson(P.spinner, { wrote: null, yielded: true });
+    return;
+  }
+  if (state?.yielded === true) return;
+
+  const milestone = cfg.spinner ? pendingMilestone(cfg) : null;
+  const ownLine = cfg.spinner
+    ? String(readJson(P.config, {})?.own_line ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    : '';
+
+  const line = milestone !== null
+    ? `TICK · you earned $${Math.floor(milestone / 1e6)}`
+    : (ownLine.length > 0 ? ownLine : null);
+
+  const desired = line === null ? null : [...BUILTIN_VERBS, line];
+  if (JSON.stringify(desired ?? null) === JSON.stringify(ours ?? null)) return;
+
+  if (desired === null) {
+    delete settings.spinnerVerbs;
+  } else {
+    settings.spinnerVerbs = desired;
+  }
+
+  try {
+    const tmp = `${SETTINGS}.tick.tmp.${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`);
+    renameSync(tmp, SETTINGS);
+  } catch {
+    return; // read-only or generated settings file: leave it alone
+  }
+
+  writeJson(P.spinner, { wrote: desired });
+  if (milestone !== null) {
+    writeJson(P.milestones, [...(readJson(P.milestones, []) ?? []), milestone]);
+  }
 }
 
 async function cycle(cfg, device, cycleNo) {
@@ -379,8 +439,13 @@ async function cycle(cfg, device, cycleNo) {
 
     rotateCurrent(queue, Date.now());
     writeJson(P.queue, queue);
-    if (cycleNo % 10 === 0) maybeMilestone(cfg, queue, Date.now());
   }
+
+  // Every cycle, not every tenth: editing own_line should take effect in half a
+  // minute rather than five. The promise of writing rarely comes from comparing
+  // content before writing, not from checking seldom — in the steady state this
+  // reads two small files and does nothing.
+  try { syncSpinner(cfg); } catch { /* the spinner is a nicety, never a failure */ }
 }
 
 async function main() {
