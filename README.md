@@ -132,9 +132,14 @@ allows it. Because that slot is where the agent says what it is doing, and an ad
 there reads as the agent doing it. There is also no way for that surface to report what it
 displayed, so billing for it would be billing for a guess.
 
+The key is written as `{"mode": "append", "verbs": ["your line"]}` — the shape Claude
+Code's own settings schema accepts. The published settings reference shows a plain array;
+that form is rejected and does nothing, which is worth knowing if you ever set it by hand.
+
 Rules we hold ourselves to for that one key:
 
-- we append, never replace;
+- we append, never replace, and `mode: "append"` is Claude Code's own mechanism, so its
+  verbs stay whatever it decides they are;
 - we write only when the value would actually change, which is once when you set a line
   and once per milestone — not on a schedule;
 - if `spinnerVerbs` holds anything that is not exactly what we wrote, it is yours now and

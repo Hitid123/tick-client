@@ -65,7 +65,7 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
     # Remove it only if the value on disk is still exactly what we wrote — if
     # someone edited it since, it is theirs now and we leave it alone.
     SPIN="$TICK_HOME/state/spinner.json"
-    if [ -f "$SPIN" ] && jq -e '.wrote | type == "array"' "$SPIN" >/dev/null 2>&1; then
+    if [ -f "$SPIN" ] && jq -e '.wrote != null' "$SPIN" >/dev/null 2>&1; then
       if jq -e --slurpfile s "$SPIN" '.spinnerVerbs == $s[0].wrote' "$SETTINGS" >/dev/null 2>&1; then
         jq 'del(.spinnerVerbs)' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
         say 'removed the spinner verb we added'

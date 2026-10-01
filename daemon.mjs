@@ -33,12 +33,6 @@ const P = {
 
 const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
 
-// Claude Code's own rotation. We append to it rather than replace it, so the
-// spinner still reads as Claude Code's and our line is an occasional guest.
-const BUILTIN_VERBS = [
-  'Thinking', 'Analyzing', 'Planning', 'Coding',
-  'Testing', 'Debugging', 'Reviewing', 'Refining',
-];
 
 // Business rules stay configurable (TZ section 16). Client-side subset only.
 const DEFAULTS = {
@@ -335,7 +329,7 @@ function pendingMilestone(cfg) {
  */
 function syncSpinner(cfg) {
   const state = readJson(P.spinner, null);
-  const ours = Array.isArray(state?.wrote) ? state.wrote : null;
+  const ours = state?.wrote ?? null;
 
   const settings = readJson(SETTINGS, null);
   if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) return;
@@ -358,7 +352,12 @@ function syncSpinner(cfg) {
     ? `TICK · you earned $${Math.floor(milestone / 1e6)}`
     : (ownLine.length > 0 ? ownLine : null);
 
-  const desired = line === null ? null : [...BUILTIN_VERBS, line];
+  // { mode: "append", verbs: [...] } is the shape Claude Code actually validates,
+  // which is not the plain array the public settings reference shows. Verified
+  // against the installed build's own schema; a plain array is rejected and the
+  // key silently does nothing. "append" also means we never have to hardcode
+  // Claude Code's own verbs, so the list cannot drift when they change it.
+  const desired = line === null ? null : { mode: 'append', verbs: [line] };
   if (JSON.stringify(desired ?? null) === JSON.stringify(ours ?? null)) return;
 
   if (desired === null) {
