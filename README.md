@@ -128,10 +128,13 @@ to Claude Code's own verbs rather than replacing them, so the spinner still read
 Claude Code's with your line as an occasional guest. Milestones ("you earned $10") go
 there too.
 
-**No advertisement ever goes in the spinner.** Not because we could not: the setting
-allows it. Because that slot is where the agent says what it is doing, and an ad sitting
-there reads as the agent doing it. There is also no way for that surface to report what it
-displayed, so billing for it would be billing for a guess.
+A paid line takes the spinner too, and takes it first: a sold creative replaces the
+rotation, your own line and milestones only fill in when nothing is sold, and with nothing
+to show at all the key is removed and Claude Code's own words come back.
+
+Nothing extra is billed for that. The impression is already counted on the status line,
+where there is a way to measure it; the spinner cannot report what it displayed, so it is
+a second placement the advertiser gets for free rather than a second sale.
 
 The key is written as `{"mode": "append", "verbs": ["your line"]}` — the shape Claude
 Code's own settings schema accepts. The published settings reference shows a plain array;

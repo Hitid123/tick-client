@@ -343,21 +343,37 @@ function syncSpinner(cfg) {
   }
   if (state?.yielded === true) return;
 
-  const milestone = cfg.spinner ? pendingMilestone(cfg) : null;
-  const ownLine = cfg.spinner
+  // Priority is the point of the product: a paid creative outranks everything.
+  const now = Date.now();
+  const cur = readJson(P.current, null);
+  const paid = cfg.spinner && cur && cur.creative_id && (cur.expires_at ?? 0) > now
+    ? String(cur.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    : '';
+
+  const milestone = cfg.spinner && !paid ? pendingMilestone(cfg) : null;
+  const ownLine = cfg.spinner && !paid
     ? String(readJson(P.config, {})?.own_line ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
     : '';
 
-  const line = milestone !== null
-    ? `TICK · you earned $${Math.floor(milestone / 1e6)}`
-    : (ownLine.length > 0 ? ownLine : null);
-
-  // { mode: "append", verbs: [...] } is the shape Claude Code actually validates,
-  // which is not the plain array the public settings reference shows. Verified
-  // against the installed build's own schema; a plain array is rejected and the
-  // key silently does nothing. "append" also means we never have to hardcode
-  // Claude Code's own verbs, so the list cannot drift when they change it.
-  const desired = line === null ? null : { mode: 'append', verbs: [line] };
+  // { mode, verbs } is the shape Claude Code actually validates — not the plain
+  // array the public settings reference shows, which is rejected silently.
+  //
+  // A sold creative replaces the rotation so it is on screen every turn, which
+  // is what the advertiser paid the status line for. Nothing extra is billed
+  // here: the impression is already counted downstairs, and this surface cannot
+  // report what it displayed. It is a free second placement, not a second sale.
+  //
+  // Our own content only appends, so an unsold machine still looks like Claude
+  // Code's, and with nothing to say the key is removed and the built-in verbs
+  // come back untouched.
+  let desired = null;
+  if (paid) {
+    desired = { mode: 'replace', verbs: [paid] };
+  } else if (milestone !== null) {
+    desired = { mode: 'append', verbs: [`TICK · you earned $${Math.floor(milestone / 1e6)}`] };
+  } else if (ownLine.length > 0) {
+    desired = { mode: 'append', verbs: [ownLine] };
+  }
   if (JSON.stringify(desired ?? null) === JSON.stringify(ours ?? null)) return;
 
   if (desired === null) {
@@ -375,7 +391,7 @@ function syncSpinner(cfg) {
   }
 
   writeJson(P.spinner, { wrote: desired });
-  if (milestone !== null) {
+  if (milestone !== null && !paid) {
     writeJson(P.milestones, [...(readJson(P.milestones, []) ?? []), milestone]);
   }
 }
