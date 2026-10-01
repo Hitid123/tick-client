@@ -51,7 +51,7 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
       say "removed $SETTINGS (it did not exist before install)"
     fi
   else
-    say "$SETTINGS changed since install; removing only our statusLine field"
+    say "$SETTINGS changed since install; removing only our own fields"
     TMP="$SETTINGS.tick.tmp.$$"
     if [ -s "$STAGE/backup.json" ] && jq -e 'has("statusLine")' "$STAGE/backup.json" >/dev/null 2>&1; then
       jq --slurpfile old "$STAGE/backup.json" '.statusLine = $old[0].statusLine' "$SETTINGS" > "$TMP"
@@ -60,6 +60,19 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
       jq 'del(.statusLine)' "$SETTINGS" > "$TMP"
     fi
     mv "$TMP" "$SETTINGS"
+
+    # The daemon may have appended a spinner verb for the user's own line.
+    # Remove it only if the value on disk is still exactly what we wrote — if
+    # someone edited it since, it is theirs now and we leave it alone.
+    SPIN="$TICK_HOME/state/spinner.json"
+    if [ -f "$SPIN" ] && jq -e '.wrote | type == "array"' "$SPIN" >/dev/null 2>&1; then
+      if jq -e --slurpfile s "$SPIN" '.spinnerVerbs == $s[0].wrote' "$SETTINGS" >/dev/null 2>&1; then
+        jq 'del(.spinnerVerbs)' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
+        say 'removed the spinner verb we added'
+      else
+        say 'left spinnerVerbs alone: it no longer matches what we wrote'
+      fi
+    fi
     say 'note: JSON formatting may differ from the original file'
   fi
   rm -rf "$STAGE"

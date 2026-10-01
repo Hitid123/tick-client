@@ -122,6 +122,26 @@ Unsold inventory goes to you. Put this in `~/.tick/config.json`:
 Up to 60 characters. It appears only when no paid creative is queued, only to you, and it
 earns nothing. Other people's custom lines are never shown to you.
 
+It also joins the spinner's rotation — the word that cycles while Claude works. We append
+to Claude Code's own verbs rather than replacing them, so the spinner still reads as
+Claude Code's with your line as an occasional guest. Milestones ("you earned $10") go
+there too.
+
+**No advertisement ever goes in the spinner.** Not because we could not: the setting
+allows it. Because that slot is where the agent says what it is doing, and an ad sitting
+there reads as the agent doing it. There is also no way for that surface to report what it
+displayed, so billing for it would be billing for a guess.
+
+Rules we hold ourselves to for that one key:
+
+- we append, never replace;
+- we write only when the value would actually change, which is once when you set a line
+  and once per milestone — not on a schedule;
+- if `spinnerVerbs` holds anything that is not exactly what we wrote, it is yours now and
+  we never touch it again;
+- `"spinner": false` in `~/.tick/config.json` switches it off;
+- uninstall removes only what we put there.
+
 ## Files
 
 | Path | What it is |
