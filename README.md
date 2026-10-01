@@ -38,6 +38,7 @@ Only what works today gets a yes. No roadmap entries in this table.
 | --- | --- |
 | Claude Code, CLI, any terminal | **Yes** — this is the `statusLine` surface |
 | Claude Code inside the VS Code / Cursor terminal | **Yes**, same CLI, same hook |
+| **The Claude desktop app** | **No.** It does not run a status line command. Measured, not assumed: the client was installed on one and the script was never invoked |
 | Claude Code's VS Code panel | No, not yet attempted |
 | OpenCode | No, planned — the TUI plugin surface exists |
 | Codex CLI | No. Codex's `[tui] status_line` takes only its own built-in fields; there is no external-command hook and no plugin surface. Nothing to install into, and we will not patch it. Two upstream requests are open for the mechanism, and contributing it is how this changes |
