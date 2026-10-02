@@ -469,12 +469,16 @@ async function main() {
   process.on('exit', cleanup);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 
-  const cfg = loadConfig();
+  let cfg = loadConfig();
   const device = loadDevice();
   let lastTickSeen = Date.now();
 
   for (let n = 1; ; n++) {
     try {
+      // Re-read every cycle. Editing api_base or own_line and seeing nothing
+      // happen until you kill the process is indistinguishable from broken,
+      // and Claude Code itself reloads its settings on change.
+      cfg = loadConfig();
       const before = existsSync(P.ticks) ? statSync(P.ticks).size : 0;
       if (before > 0) lastTickSeen = Date.now();
       await cycle(cfg, device, n);
