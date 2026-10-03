@@ -91,6 +91,7 @@ STDIN_JSON=$(cat 2>/dev/null)
 
 DISPLAY=''
 CLICK_URL=''
+PROMO=''
 FRESH='0'
 TICKLINE=''
 
@@ -188,6 +189,8 @@ if command -v jq >/dev/null 2>&1; then
 
     | ($out[1] | fit),
       (if $live != null then ($live.click_url | safe_url) else "" end),
+      # The promo code, so the one actionable word can be picked out of the line.
+      (if $live != null then ($live.promo_code // "" | clean) else "" end),
       # How recently this creative arrived: 2 = just now, 1 = still recent, 0 = settled.
       (if $live == null then "0"
        else (($now - ($live.shown_at // 0))) as $age
@@ -204,8 +207,8 @@ if command -v jq >/dev/null 2>&1; then
     ' 2>/dev/null)
 
   if [ -n "$OUT" ]; then
-    { IFS= read -r DISPLAY; IFS= read -r CLICK_URL; IFS= read -r FRESH
-      IFS= read -r TICKLINE; } <<OUT_EOF
+    { IFS= read -r DISPLAY; IFS= read -r CLICK_URL; IFS= read -r PROMO
+      IFS= read -r FRESH; IFS= read -r TICKLINE; } <<OUT_EOF
 $OUT
 OUT_EOF
   fi
@@ -214,6 +217,23 @@ fi
 if [ -z "$TICKLINE" ] && [ -f "$TICK_HOME/nojq.sh" ]; then
   # jq missing or failed: degraded pure-shell path (TZ 3).
   . "$TICK_HOME/nojq.sh" 2>/dev/null
+fi
+
+# A promo code is the one word in the line a reader can act on, so it is the one
+# word that gets its own colour. Green reads as "offer" in every shop window
+# there has ever been, and unlike the arrival effect it stays: the code is still
+# useful on the fifth minute. Substitution is plain parameter expansion, so a
+# code that got truncated away simply is not found and nothing happens.
+if [ -n "$PROMO" ] && [ -n "$COLOR_ON" ]; then
+  case "$DISPLAY" in
+    *"$PROMO"*)
+      _pre=${DISPLAY%%"$PROMO"*}
+      _post=${DISPLAY#*"$PROMO"}
+      # Closing with the prevailing colour, not a reset, so the promo does not
+      # punch a hole in the arrival highlight while that is still running.
+      DISPLAY="$_pre$(printf '\033[38;5;71m')$PROMO$(printf '\033[0m')$_post"
+      ;;
+  esac
 fi
 
 emit "$DISPLAY" "$CLICK_URL" "$FRESH"
