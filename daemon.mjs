@@ -305,6 +305,7 @@ function rotateCurrent(queue, now) {
     // Present only when the campaign has somewhere to send a click. The status
     // line validates it again before printing; a server is not a reason to trust.
     ...(typeof next.click_url === 'string' ? { click_url: next.click_url } : {}),
+    ...(typeof next.promo_code === 'string' ? { promo_code: next.promo_code } : {}),
   });
   return true;
 }
@@ -445,6 +446,7 @@ async function cycle(cfg, device, cycleNo) {
             text: c.text,
             ttl_sec: typeof c.ttl_sec === 'number' ? c.ttl_sec : 600,
             ...(typeof c.click_url === 'string' ? { click_url: c.click_url } : {}),
+            ...(typeof c.promo_code === 'string' ? { promo_code: c.promo_code } : {}),
           });
         }
       }
