@@ -67,7 +67,13 @@ emit() {
     printf '\n'
     return
   fi
-  if [ "$3" = "1" ] && [ -n "$COLOR_ON" ]; then
+  # Three steps rather than one, because a single on/off is easy to miss if you
+  # happen to glance a second late. Bold accent while it is brand new, plain
+  # accent while it is still recent, then the terminal's own colour. It reads as
+  # settling down — which is a thing eyes follow — without ever flashing.
+  if [ -n "$COLOR_ON" ] && [ "$3" = "2" ]; then
+    TEXT_ON="$(printf '\033[1m')$COLOR_ON"; TEXT_OFF="$COLOR_OFF"
+  elif [ -n "$COLOR_ON" ] && [ "$3" = "1" ]; then
     TEXT_ON="$COLOR_ON"; TEXT_OFF="$COLOR_OFF"
   else
     TEXT_ON=''; TEXT_OFF=''
@@ -182,8 +188,11 @@ if command -v jq >/dev/null 2>&1; then
 
     | ($out[1] | fit),
       (if $live != null then ($live.click_url | safe_url) else "" end),
-      # Freshly arrived: the first few seconds of a new creative, once.
-      (if $live != null and (($now - ($live.shown_at // 0)) < 7000) then "1" else "0" end),
+      # How recently this creative arrived: 2 = just now, 1 = still recent, 0 = settled.
+      (if $live == null then "0"
+       else (($now - ($live.shown_at // 0))) as $age
+         | if $age < 5000 then "2" elif $age < 15000 then "1" else "0" end
+       end),
       ({ ts: $now,
          sid: ($in.session_id | clean),
          cid: $out[0],
