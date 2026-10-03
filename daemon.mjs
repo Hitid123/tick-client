@@ -298,7 +298,10 @@ function rotateCurrent(queue, now) {
   writeJson(P.current, {
     creative_id: next.creative_id,
     text: next.text,
-    expires_at: now + (next.ttl_sec ?? 600) * 1000,
+    // When this one arrived, so the status line can mark its arrival and then
+    // stop. The eye catches a change; it ignores a thing that is simply there.
+    shown_at: now,
+    expires_at: now + (next.ttl_sec ?? 300) * 1000,
     // Present only when the campaign has somewhere to send a click. The status
     // line validates it again before printing; a server is not a reason to trust.
     ...(typeof next.click_url === 'string' ? { click_url: next.click_url } : {}),

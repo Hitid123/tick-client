@@ -56,16 +56,28 @@ case "${TERM:-}" in dumb|'') LINKS=0 ;; esac
 
 emit() {
   # $1 = visible text, already fitted. $2 = click URL, may be empty.
+  # $3 = "1" while the creative is newly arrived.
+  #
+  # A new line gets the accent colour for its first few seconds and then settles
+  # into the terminal's own. That is an entrance, not a strobe: it is noticed
+  # once, by the one thing eyes are actually good at, and then it stops asking
+  # for attention. Blinking text would be noticed every second forever, which is
+  # how a status line becomes the reason someone uninstalls.
   if [ -z "$1" ]; then
     printf '\n'
     return
   fi
+  if [ "$3" = "1" ] && [ -n "$COLOR_ON" ]; then
+    TEXT_ON="$COLOR_ON"; TEXT_OFF="$COLOR_OFF"
+  else
+    TEXT_ON=''; TEXT_OFF=''
+  fi
   if [ "$LINKS" -eq 1 ] && [ -n "$2" ]; then
     # \033]8;;URL\a TEXT \033]8;;\a  — the URL is invisible and costs no width.
-    printf '%s%s%s \033]8;;%s\a%s\033]8;;\a\n' \
-      "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$2" "$1"
+    printf '%s%s%s \033]8;;%s\a%s%s%s\033]8;;\a\n' \
+      "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$2" "$TEXT_ON" "$1" "$TEXT_OFF"
   else
-    printf '%s%s%s %s\n' "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$1"
+    printf '%s%s%s %s%s%s\n' "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$TEXT_ON" "$1" "$TEXT_OFF"
   fi
 }
 
@@ -73,6 +85,7 @@ STDIN_JSON=$(cat 2>/dev/null)
 
 DISPLAY=''
 CLICK_URL=''
+FRESH='0'
 TICKLINE=''
 
 if command -v jq >/dev/null 2>&1; then
@@ -169,6 +182,8 @@ if command -v jq >/dev/null 2>&1; then
 
     | ($out[1] | fit),
       (if $live != null then ($live.click_url | safe_url) else "" end),
+      # Freshly arrived: the first few seconds of a new creative, once.
+      (if $live != null and (($now - ($live.shown_at // 0)) < 7000) then "1" else "0" end),
       ({ ts: $now,
          sid: ($in.session_id | clean),
          cid: $out[0],
@@ -180,7 +195,8 @@ if command -v jq >/dev/null 2>&1; then
     ' 2>/dev/null)
 
   if [ -n "$OUT" ]; then
-    { IFS= read -r DISPLAY; IFS= read -r CLICK_URL; IFS= read -r TICKLINE; } <<OUT_EOF
+    { IFS= read -r DISPLAY; IFS= read -r CLICK_URL; IFS= read -r FRESH
+      IFS= read -r TICKLINE; } <<OUT_EOF
 $OUT
 OUT_EOF
   fi
@@ -191,7 +207,7 @@ if [ -z "$TICKLINE" ] && [ -f "$TICK_HOME/nojq.sh" ]; then
   . "$TICK_HOME/nojq.sh" 2>/dev/null
 fi
 
-emit "$DISPLAY" "$CLICK_URL"
+emit "$DISPLAY" "$CLICK_URL" "$FRESH"
 
 # --- append tick -------------------------------------------------------------
 if [ -n "$TICKLINE" ]; then
