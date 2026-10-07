@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,7 +46,6 @@ var (
 	pDispatchMessageW              = user32.NewProc("DispatchMessageW")
 	pSetTimer                      = user32.NewProc("SetTimer")
 	pShowWindow                    = user32.NewProc("ShowWindow")
-	pSetWindowPos                  = user32.NewProc("SetWindowPos")
 	pIsWindowVisible               = user32.NewProc("IsWindowVisible")
 	pIsIconic                      = user32.NewProc("IsIconic")
 	pEnumWindows                   = user32.NewProc("EnumWindows")
@@ -55,11 +55,6 @@ var (
 	pGetWindowRect                 = user32.NewProc("GetWindowRect")
 	pGetDpiForWindow               = user32.NewProc("GetDpiForWindow")
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
-	pSetLayeredWindowAttributes    = user32.NewProc("SetLayeredWindowAttributes")
-	pSetWindowRgn                  = user32.NewProc("SetWindowRgn")
-	pBeginPaint                    = user32.NewProc("BeginPaint")
-	pEndPaint                      = user32.NewProc("EndPaint")
-	pInvalidateRect                = user32.NewProc("InvalidateRect")
 	pFillRect                      = user32.NewProc("FillRect")
 	pSetCapture                    = user32.NewProc("SetCapture")
 	pReleaseCapture                = user32.NewProc("ReleaseCapture")
@@ -67,6 +62,7 @@ var (
 	pSetCursor                     = user32.NewProc("SetCursor")
 	pLoadCursorW                   = user32.NewProc("LoadCursorW")
 	pMonitorFromWindow             = user32.NewProc("MonitorFromWindow")
+	pUpdateLayeredWindow           = user32.NewProc("UpdateLayeredWindow")
 	pGetMonitorInfoW               = user32.NewProc("GetMonitorInfoW")
 
 	pCreateFontW           = gdi32.NewProc("CreateFontW")
@@ -77,9 +73,9 @@ var (
 	pTextOutW              = gdi32.NewProc("TextOutW")
 	pGetTextExtentPoint32W = gdi32.NewProc("GetTextExtentPoint32W")
 	pCreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
-	pCreateRoundRectRgn    = gdi32.NewProc("CreateRoundRectRgn")
-	pFrameRgn              = gdi32.NewProc("FrameRgn")
 	pCreateCompatibleDC    = gdi32.NewProc("CreateCompatibleDC")
+	pCreateDIBSection      = gdi32.NewProc("CreateDIBSection")
+	pGdiFlush              = gdi32.NewProc("GdiFlush")
 	pDeleteDC              = gdi32.NewProc("DeleteDC")
 
 	pOpenProcess                = kernel32.NewProc("OpenProcess")
@@ -102,7 +98,6 @@ const (
 	wsExTopmost       = 0x00000008
 	wsExToolwindow    = 0x00000080
 	wsExNoactivate    = 0x08000000
-	wmPaint           = 0x000F
 	wmTimer           = 0x0113
 	wmSetCursor       = 0x0020
 	wmMouseActivate   = 0x0021
@@ -112,10 +107,6 @@ const (
 	maNoActivate      = 3
 	swHide            = 0
 	swShowNormal      = 1
-	swpNoActivate     = 0x0010
-	swpShowWindow     = 0x0040
-	hwndTopmost       = ^uintptr(0) // (HWND)-1
-	lwaAlpha          = 0x2
 	transparent       = 1
 	idcHand           = 32649
 	dwmaExtendedFrame = 9
@@ -139,14 +130,6 @@ type msg struct {
 	Time    uint32
 	Pt      point
 	_       uint32
-}
-type paintStruct struct {
-	Hdc       uintptr
-	Erase     int32
-	Paint     rect
-	Restore   int32
-	IncUpdate int32
-	Reserved  [32]byte
 }
 type wndClassEx struct {
 	Size       uint32
@@ -213,7 +196,6 @@ var (
 	appliedDX  float64
 	stripRect  Rect
 	arrivedAt  float64
-	rgnW, rgnH int32
 	fonts      = map[int]uintptr{}
 	fontsScale float64
 )
@@ -317,6 +299,46 @@ func monitorOf(w uintptr) Rect {
 	mi := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
 	pGetMonitorInfoW.Call(m, uintptr(unsafe.Pointer(&mi)))
 	return Rect{float64(mi.Monitor.L), float64(mi.Monitor.T), float64(mi.Monitor.R), float64(mi.Monitor.B)}
+}
+
+// Light or dark as the person set it in Claude, the one setting read from its
+// config.json; "system" or no file means the Windows apps setting. The file is
+// in %APPDATA%\Claude for the regular installer and inside the package folder
+// for the Microsoft Store one, so both are looked for, and the search is
+// repeated now and then rather than on every frame.
+var (
+	claudeConfig   string
+	claudeConfigAt float64
+)
+
+func claudeTheme() string {
+	now := nowMs()
+	if claudeConfig == "" && now-claudeConfigAt > 30000 {
+		claudeConfigAt = now
+		candidates := []string{filepath.Join(os.Getenv("APPDATA"), "Claude", "config.json")}
+		store, _ := filepath.Glob(filepath.Join(os.Getenv("LOCALAPPDATA"), "Packages", "*Claude*", "LocalCache", "Roaming", "Claude", "config.json"))
+		candidates = append(candidates, store...)
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				claudeConfig = c
+				break
+			}
+		}
+	}
+	if claudeConfig == "" {
+		return "system"
+	}
+	return str(readJSON(claudeConfig), "userThemeMode")
+}
+
+func themeIsDark() bool {
+	switch claudeTheme() {
+	case "dark":
+		return true
+	case "light":
+		return false
+	}
+	return systemDark()
 }
 
 // Apps light or dark, the setting Claude follows by default.
@@ -445,43 +467,112 @@ func colorFor(kind int, fresh bool) uint32 {
 	return pal.settled
 }
 
-func paint(w uintptr) {
-	var ps paintStruct
-	dc, _, _ := pBeginPaint.Call(w, uintptr(unsafe.Pointer(&ps)))
-	defer pEndPaint.Call(w, uintptr(unsafe.Pointer(&ps)))
-	if creative == nil {
+// The strip is drawn as an image with its own alpha and handed to Windows
+// whole: corners and border are smooth, and the fade is the image's opacity.
+// Text goes down first on the solid surface, where ClearType has a known
+// background and stays sharp; the shape is cut afterwards, pixel by pixel.
+type bitmapInfo struct {
+	Size                         uint32
+	Width, Height                int32
+	Planes, BitCount             uint16
+	Compression, SizeImage       uint32
+	XPelsPerMeter, YPelsPerMeter int32
+	ClrUsed, ClrImportant        uint32
+	Colors                       [1]uint32
+}
+
+var (
+	memDC     uintptr
+	dib       uintptr
+	pixels    []uint32
+	renderKey string
+)
+
+func render(w, h int32, fresh bool) {
+	key := strings.Join([]string{creative.Text, creative.Promo, strconv.Itoa(int(w)), strconv.Itoa(int(h)),
+		strconv.FormatBool(fresh), strconv.FormatBool(dark)}, "|")
+	if key == renderKey {
 		return
 	}
-	bg, _, _ := pCreateSolidBrush.Call(rgb(pal.surface))
-	full := rect{0, 0, stripW, stripH}
-	pFillRect.Call(dc, uintptr(unsafe.Pointer(&full)), bg)
-	pDeleteObject.Call(bg)
-	radius := int32(math.Round(7 * scale * 2))
-	rgn, _, _ := pCreateRoundRectRgn.Call(0, 0, uintptr(stripW), uintptr(stripH), uintptr(radius), uintptr(radius))
-	border, _, _ := pCreateSolidBrush.Call(rgb(pal.border))
-	pFrameRgn.Call(dc, rgn, border, 1, 1)
-	pDeleteObject.Call(border)
-	pDeleteObject.Call(rgn)
-
-	pSetBkMode.Call(dc, transparent)
-	fresh := nowMs()-arrivedAt < freshMs
-	x := int32(math.Round(11 * scale))
-	for _, s := range segments(*creative) {
-		pSelectObject.Call(dc, font(s.Kind))
-		pSetTextColor.Call(dc, rgb(colorFor(s.Kind, fresh)))
-		t, _ := syscall.UTF16FromString(s.Text)
-		var sz struct{ CX, CY int32 }
-		pGetTextExtentPoint32W.Call(dc, uintptr(unsafe.Pointer(&t[0])), uintptr(len(t)-1), uintptr(unsafe.Pointer(&sz)))
-		y := (stripH - sz.CY) / 2
-		pTextOutW.Call(dc, uintptr(x), uintptr(y), uintptr(unsafe.Pointer(&t[0])), uintptr(len(t)-1))
-		x += sz.CX + gapAfter(s.Kind)
+	renderKey = key
+	if memDC == 0 {
+		memDC, _, _ = pCreateCompatibleDC.Call(0)
 	}
+	if dib != 0 {
+		pDeleteObject.Call(dib)
+	}
+	bi := bitmapInfo{Size: 40, Width: w, Height: -h, Planes: 1, BitCount: 32}
+	// The pixel memory belongs to GDI, not to Go, and lives until the DIB is
+	// deleted; Go only looks at it through this slice.
+	var bits unsafe.Pointer
+	dib, _, _ = pCreateDIBSection.Call(memDC, uintptr(unsafe.Pointer(&bi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	pSelectObject.Call(memDC, dib)
+	pixels = unsafe.Slice((*uint32)(bits), int(w)*int(h))
+
+	bg, _, _ := pCreateSolidBrush.Call(rgb(pal.surface))
+	full := rect{0, 0, w, h}
+	pFillRect.Call(memDC, uintptr(unsafe.Pointer(&full)), bg)
+	pDeleteObject.Call(bg)
+
+	pSetBkMode.Call(memDC, transparent)
+	x := int32(math.Round(11 * scale))
+	for _, sg := range segments(*creative) {
+		pSelectObject.Call(memDC, font(sg.Kind))
+		pSetTextColor.Call(memDC, rgb(colorFor(sg.Kind, fresh)))
+		t, _ := syscall.UTF16FromString(sg.Text)
+		var sz struct{ CX, CY int32 }
+		pGetTextExtentPoint32W.Call(memDC, uintptr(unsafe.Pointer(&t[0])), uintptr(len(t)-1), uintptr(unsafe.Pointer(&sz)))
+		pTextOutW.Call(memDC, uintptr(x), uintptr((h-sz.CY)/2), uintptr(unsafe.Pointer(&t[0])), uintptr(len(t)-1))
+		x += sz.CX + gapAfter(sg.Kind)
+	}
+	pGdiFlush.Call()
+	cutShape(w, h)
+}
+
+// A rounded rectangle by its distance field: coverage at the edge comes out
+// fractional, which is what makes it smooth, and a one-pixel band just inside
+// the edge takes the border colour. Colours are premultiplied, as Windows
+// expects for a per-pixel alpha image.
+func cutShape(w, h int32) {
+	r := 7 * scale
+	bw := math.Max(1, math.Round(scale))
+	cx, cy := float64(w)/2, float64(h)/2
+	br, bgc, bb := float64((pal.border>>16)&0xff), float64((pal.border>>8)&0xff), float64(pal.border&0xff)
+	for y := int32(0); y < h; y++ {
+		for x := int32(0); x < w; x++ {
+			qx := math.Abs(float64(x)+0.5-cx) - (cx - r)
+			qy := math.Abs(float64(y)+0.5-cy) - (cy - r)
+			d := math.Hypot(math.Max(qx, 0), math.Max(qy, 0)) + math.Min(math.Max(qx, qy), 0) - r
+			cover := math.Min(1, math.Max(0, 0.5-d))
+			i := int(y)*int(w) + int(x)
+			if cover == 0 {
+				pixels[i] = 0
+				continue
+			}
+			px := pixels[i]
+			pr, pg, pb := float64((px>>16)&0xff), float64((px>>8)&0xff), float64(px&0xff)
+			if mix := math.Min(1, math.Max(0, d+bw+0.5)); mix > 0 {
+				pr, pg, pb = pr+(br-pr)*mix, pg+(bgc-pg)*mix, pb+(bb-pb)*mix
+			}
+			a := cover * 255
+			pixels[i] = uint32(a)<<24 | uint32(pr*cover)<<16 | uint32(pg*cover)<<8 | uint32(pb*cover)
+		}
+	}
+}
+
+// Position, image and opacity in one call.
+func push(x, y, w, h int32, a int) {
+	pos := point{x, y}
+	size := struct{ CX, CY int32 }{w, h}
+	src := point{0, 0}
+	blend := [4]byte{0, 0, byte(a), 1} // AC_SRC_OVER, 0, constant alpha, AC_SRC_ALPHA
+	pUpdateLayeredWindow.Call(hwnd, 0, uintptr(unsafe.Pointer(&pos)), uintptr(unsafe.Pointer(&size)),
+		memDC, uintptr(unsafe.Pointer(&src)), 0, uintptr(unsafe.Pointer(&blend)), 2 /* ULW_ALPHA */)
 }
 
 func hide() {
 	if shown {
 		pShowWindow.Call(hwnd, swHide)
-		pSetLayeredWindowAttributes.Call(hwnd, 0, 0, lwaAlpha)
 		shown = false
 		alpha = 0
 	}
@@ -521,24 +612,20 @@ func show(c *Creative, cw *claudeWin, s Settings) {
 	stripRect = Rect{float64(x), float64(y), float64(x + w), float64(y + stripH)}
 
 	stripW = w
-	if w != rgnW || stripH != rgnH {
-		rgnW, rgnH = w, stripH
-		radius := int32(math.Round(7 * scale * 2))
-		rgn, _, _ := pCreateRoundRectRgn.Call(0, 0, uintptr(w+1), uintptr(stripH+1), uintptr(radius), uintptr(radius))
-		pSetWindowRgn.Call(hwnd, rgn, 1) // the window owns the region from here
-	}
-	pSetWindowPos.Call(hwnd, hwndTopmost, uintptr(x), uintptr(y), uintptr(w), uintptr(stripH), swpNoActivate|swpShowWindow)
-	if changed || nowMs()-arrivedAt < freshMs+300 {
-		pInvalidateRect.Call(hwnd, 0, 1)
-	}
+	render(w, stripH, nowMs()-arrivedAt < freshMs)
+	// A short fade in, three steps of the 60 ms timer. The image and its
+	// opacity go in before the window is shown, so the first frame is never
+	// the previous creative at full strength.
 	if !shown {
-		shown = true
 		alpha = 0
 	}
-	// A short fade in, three steps of the 60 ms timer.
 	if alpha < 255 {
 		alpha = int(math.Min(255, float64(alpha+90)))
-		pSetLayeredWindowAttributes.Call(hwnd, 0, uintptr(alpha), lwaAlpha)
+	}
+	push(x, y, w, stripH, alpha)
+	if !shown {
+		shown = true
+		pShowWindow.Call(hwnd, 4 /* SW_SHOWNOACTIVATE */)
 	}
 }
 
@@ -573,7 +660,7 @@ func loop() {
 	}
 	if now-themeAt > 2000 {
 		themeAt = now
-		dark = systemDark()
+		dark = themeIsDark()
 	}
 	if dark {
 		pal = darkPal
@@ -623,9 +710,6 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) uintptr {
 	switch m {
 	case wmTimer:
 		loop()
-		return 0
-	case wmPaint:
-		paint(w)
 		return 0
 	case wmMouseActivate:
 		// Clicking the strip must not take focus from Claude.
@@ -694,7 +778,6 @@ func main() {
 	hwnd, _, _ = pCreateWindowExW.Call(wsExLayered|wsExTopmost|wsExToolwindow|wsExNoactivate,
 		uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(u16("TICK"))), wsPopup,
 		0, 0, 10, 10, 0, 0, inst, 0)
-	pSetLayeredWindowAttributes.Call(hwnd, 0, 0, lwaAlpha)
 	pSetTimer.Call(hwnd, 1, 60, 0)
 
 	var m msg
