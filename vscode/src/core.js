@@ -60,6 +60,15 @@ const WORK_STARTS = 'UserPromptSubmit';
  */
 const AGENTS = { cc: 'Claude Code', cx: 'Codex' };
 
+/**
+ * Marks an editor window may count. A session in the Claude desktop app (`cd`)
+ * is on screen in that app, not in this window: the desktop satellite draws
+ * and counts it. Counting it here too would bill one display twice.
+ */
+function countsInEditor(mark) {
+  return !!mark && mark.ag !== 'cd';
+}
+
 function agentName(tag) {
   return AGENTS[tag] ?? AGENTS.cc;
 }
@@ -718,6 +727,7 @@ module.exports = {
   offerIsFresh,
   setupView,
   AGENTS,
+  countsInEditor,
   agentName,
   escapeMarkdown,
   tooltip,

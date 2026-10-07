@@ -1,7 +1,8 @@
 # TICK client
 
-A one-line ad marketplace that lives in the Claude Code status line. You see a short
-line, the advertiser pays, and **70% of the revenue is yours**.
+A one-line ad marketplace that lives in the Claude Code status line — and, on a Mac, in a
+strip under the message box of the Claude desktop app. You see a short line, the
+advertiser pays, and **70% of the revenue is yours**.
 
 ## Install
 
@@ -18,9 +19,10 @@ less tick-install.sh
 sh tick-install.sh
 ```
 
-Either way it downloads five files, checks them against published `SHA256SUMS`, and stops
-without installing anything if a checksum does not match. It needs no root. From a clone,
-skip the download: `cd client && ./install.sh`.
+Either way it downloads six files — on a Mac, also the desktop satellite and its icon —
+checks them against published `SHA256SUMS`, and stops without installing anything if a
+checksum does not match. It needs no root. From a clone, skip the download:
+`cd client && ./install.sh`. On a Mac, `--no-desktop` leaves the desktop satellite out.
 
 Removing it is one command and leaves nothing behind:
 
@@ -38,8 +40,10 @@ Only what works today gets a yes. No roadmap entries in this table.
 | --- | --- |
 | Claude Code, CLI, any terminal | **Yes** — this is the `statusLine` surface |
 | Claude Code inside the VS Code / Cursor terminal | **Yes**, same CLI, same hook |
-| **The Claude desktop app** | **No.** It does not run a status line command. Measured, not assumed: the client was installed on one and the script was never invoked |
-| Claude Code's VS Code panel | No, not yet attempted |
+| **The Claude desktop app, macOS** | **Yes, through the desktop satellite** — see below. The app never runs a status line command (measured, not assumed), but it does run hooks, and a small program of ours draws the line |
+| The Claude desktop app, Windows | Not yet |
+| Claude Code's VS Code panel | **Yes**, through the [TICK extension](https://marketplace.visualstudio.com/items?itemName=tick.gettick) |
+| Codex in the VS Code panel | **Yes**, the same extension. Codex asks you to approve our hook once, with `/hooks` |
 | OpenCode | No, planned — the TUI plugin surface exists |
 | Codex CLI | No. Codex's `[tui] status_line` takes only its own built-in fields; there is no external-command hook and no plugin surface. Nothing to install into, and we will not patch it. Two upstream requests are open for the mechanism, and contributing it is how this changes |
 | Cursor's own agent | No, it exposes nothing |
@@ -76,6 +80,40 @@ back to a session id, and cannot correlate one across machines.
 Everything above is enforced by a test that runs the real scripts, captures the real HTTP
 payload, and fails if any forbidden string appears in it
 ([`tests/privacy.test.mjs`](../tests/privacy.test.mjs)). It is part of CI.
+
+## The desktop satellite (macOS)
+
+The Claude desktop app has no status line to draw into, so on a Mac the installer adds a
+small program of ours, `~/.tick/TICK.app`, started at login. While a desktop session is
+working and Claude is the app in front, it lays a strip over the empty row under Claude's
+message box: a quiet **Ad**, the offer, the promo code. It is a separate window on top.
+Claude itself is not modified.
+
+**What it can see.** The outer frame of Claude's window — where it is and how big — which
+macOS gives any program without asking. And one setting from Claude's own `config.json`,
+`userThemeMode`, so the strip matches the theme you chose. That is all. It asks for **no
+Accessibility and no Screen Recording permission**, so it cannot see what is inside the
+window, your conversation included.
+
+**What it adds.** Three hook entries in `~/.claude/settings.json` (`UserPromptSubmit`,
+`Stop`, `SessionEnd`), in the same form the editor extension writes, so the two never
+duplicate. The hook writes three fields — a timestamp, an event name, and `cd` for the
+desktop app — and never opens the transcript. One login item,
+`~/Library/LaunchAgents/dev.gettick.satellite.plist`. macOS will tell you that "TICK can
+run in the background" and list it as from an unidentified developer: it is signed for
+your Mac, not by an Apple developer account.
+
+**What counts.** Five seconds of the strip on screen while the model works, as in the
+terminal — and only while Claude is in front and every point of the strip is inside
+Claude's window and on a display. Hidden, covered or dragged away, it earns nothing.
+
+**Moving it.** Claude centres its message box between its side panels, which the satellite
+cannot see. Drag the strip sideways to where it belongs; it stays in that row and
+remembers. Resizing the window does not move it; opening or closing a panel might.
+A click that does not drag opens the advertiser, through our redirect.
+
+**Turning it off.** `"desktop": {"enabled": false}` in `~/.tick/config.json`, or install
+with `--no-desktop`. `uninstall.sh` removes the app, the login item and our hook entries.
 
 ## How it works
 
@@ -164,6 +202,11 @@ Rules we hold ourselves to for that one key:
 | `~/.tick/state/balance.json` | Last known balance, in micro-dollars |
 | `~/.tick/state/device.json` | Device id and the hashing salt. Not synced anywhere |
 | `~/.tick/settings.backup.*.json` | Your `settings.json`, as it was before install |
+| `~/.tick/hook.mjs` | The activity hook, Mac only: three fields per event, no transcript |
+| `~/.tick/state/activity/` | One file per session from the hook: time, event, agent |
+| `~/.tick/TICK.app` | The desktop satellite, Mac only |
+| `~/.tick/state/desktop-placement.json` | Where you dragged the desktop strip |
+| `~/Library/LaunchAgents/dev.gettick.satellite.plist` | Starts the satellite at login, Mac only |
 
 ## Terminals
 
@@ -171,10 +214,10 @@ The line adapts to what the terminal actually supports. Nothing here needs confi
 
 | Situation | What you get |
 | --- | --- |
-| Any 256-colour terminal (iTerm2, Terminal.app, Alacritty, kitty, WezTerm, Windows Terminal, VS Code) | `▸` in coral, text in your terminal's own colour |
+| Any 256-colour terminal (iTerm2, Terminal.app, Alacritty, kitty, WezTerm, Windows Terminal, VS Code) | `▌` muted, the offer bright for two seconds and then a step down, the promo code in amber |
 | `NO_COLOR` set to anything, including empty | The same line with no escape sequences |
 | `TERM=dumb`, or `TERM` unset | No escape sequences |
-| `LANG`/`LC_ALL` set to `C`, `POSIX` or an 8-bit charset | ASCII throughout: `>` instead of `▸`, `~` instead of `…`, `-` instead of `·` |
+| `LANG`/`LC_ALL` set to `C`, `POSIX` or an 8-bit charset | ASCII throughout: `\|` instead of `▌`, `~` instead of `…`, `-` instead of `·` |
 | `LANG` unset entirely | UTF-8, which is what every modern terminal does |
 
 Width is measured in **terminal cells, not characters**. CJK and emoji take two cells,
@@ -199,8 +242,9 @@ run any status line command and the line stays empty. `claude --debug` says
 `Status line command skipped: workspace trust not accepted`.
 
 **We never patch Claude Code.** No modified `cli.js`, no touched install, no injected
-webview. The only thing we write outside `~/.tick` is one `statusLine` field in
-`~/.claude/settings.json`, and it is backed up first.
+webview. Outside `~/.tick` we write the `statusLine` field in `~/.claude/settings.json`,
+backed up first, and on a Mac three hook entries there and one login item. The desktop
+strip is our own window laid over Claude's, not a change to Claude.
 
 ## Troubleshooting
 

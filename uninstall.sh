@@ -30,6 +30,19 @@ if [ -f "$PIDF" ]; then
   esac
 fi
 
+# --- stop the desktop satellite (macOS) -------------------------------------
+PLIST="$HOME/Library/LaunchAgents/dev.gettick.satellite.plist"
+if [ -f "$PLIST" ]; then
+  # Same guard as the installer: launchctl reaches the real login session, so
+  # it is only called when $HOME is the real one.
+  REAL_HOME=$(eval echo "~$(id -un)")
+  if [ "$HOME" = "$REAL_HOME" ] && [ "${TICK_NO_LAUNCHD:-0}" != 1 ]; then
+    launchctl bootout "gui/$(id -u)/dev.gettick.satellite" 2>/dev/null || true
+  fi
+  rm -f "$PLIST"
+  say 'stopped the desktop satellite and removed its login item'
+fi
+
 # --- restore settings.json ---------------------------------------------------
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
   SETTINGS=$(jq -r '.settings' "$MANIFEST")
@@ -60,6 +73,23 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
       jq 'del(.statusLine)' "$SETTINGS" > "$TMP"
     fi
     mv "$TMP" "$SETTINGS"
+
+    # Our hook entries, matched by their exact command, and only the containers
+    # that end up empty because of it. Anyone else's hooks stay where they were.
+    HOOK_CMD=$(jq -r '.hook // empty' "$MANIFEST")
+    if [ -n "$HOOK_CMD" ]; then
+      jq --arg cmd "$HOOK_CMD" '
+        if (.hooks | type) == "object" then
+          .hooks |= with_entries(
+            .value |= (if type == "array"
+              then map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $cmd)) else . end)
+                   | map(select((.hooks | type) != "array" or (.hooks | length) > 0))
+              else . end))
+          | .hooks |= with_entries(select((.value | type) != "array" or (.value | length) > 0))
+          | if .hooks == {} then del(.hooks) else . end
+        else . end' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
+      say 'removed our activity hook'
+    fi
 
     # The daemon may have appended a spinner verb for the user's own line.
     # Remove it only if the value on disk is still exactly what we wrote — if

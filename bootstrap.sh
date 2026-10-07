@@ -10,16 +10,20 @@
 #   less tick-install.sh
 #   sh tick-install.sh
 #
-# This script downloads five small files, checks them against published
-# checksums, and runs the real installer. It needs no root and touches nothing
-# outside ~/.tick and one field in ~/.claude/settings.json.
+# This script downloads the client's files (six, plus the desktop satellite on
+# a Mac), checks them against published checksums, and runs the real installer.
+# It needs no root. Outside ~/.tick it touches ~/.claude/settings.json, backed
+# up first, and on a Mac one login item for the satellite. install.sh says
+# exactly what, and --no-desktop leaves the Mac parts out.
 
 set -eu
 
 REPO="${TICK_REPO:-Hitid123/tick-client}"
 REF="${TICK_REF:-main}"
 BASE="${TICK_BASE:-https://raw.githubusercontent.com/$REPO/$REF}"
-FILES="statusline.sh nojq.sh daemon.mjs install.sh uninstall.sh"
+FILES="statusline.sh nojq.sh daemon.mjs hook.mjs install.sh uninstall.sh"
+# The desktop satellite is a Mac program; nobody else needs to download it.
+[ "$(uname -s)" = Darwin ] && FILES="$FILES tick-satellite-macos TICK.icns"
 
 die() { printf 'tick: %s\n' "$1" >&2; exit 1; }
 

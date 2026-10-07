@@ -10,7 +10,7 @@
 // Both agents we support use the same three event names and hand the hook the
 // same `hook_event_name` field, so one script serves both. Which agent called
 // is passed as an argument at registration time rather than guessed: Claude
-// Code is `cc`, Codex is `cx`.
+// Code is `cc`, Codex is `cx`, and Claude Code inside the desktop app is `cd`.
 //
 // Contract, in the same spirit as the status line (TZ section 2, 4.1):
 //   - no network, ever;
@@ -45,8 +45,13 @@ try {
   const ev = String(payload.hook_event_name ?? '');
   if (!EVENTS.has(ev)) process.exit(0);
 
+  // The Claude desktop app runs the same hooks from the same settings file, and
+  // its sessions are drawn by the desktop satellite, not by an editor window.
+  // It says which one it is in CLAUDE_CODE_ENTRYPOINT; we read that one variable
+  // and write only the resulting tag, `cd`.
   const arg = String(process.argv[2] ?? '');
-  const ag = arg === 'cx' || arg === 'cc' ? arg : 'cc';
+  const desktop = process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop';
+  const ag = arg === 'cx' ? 'cx' : desktop ? 'cd' : 'cc';
 
   // The session id becomes a file name, so anything that is not plainly an id
   // is treated as no id at all.

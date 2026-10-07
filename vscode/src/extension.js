@@ -409,7 +409,7 @@ function activityMarks() {
     const sessionId = core.safeSessionId(name.slice(0, -5));
     if (!sessionId) continue;
     const mark = readJson(path.join(P.activity, name), null);
-    if (mark) out.push({ sessionId, mark });
+    if (core.countsInEditor(mark)) out.push({ sessionId, mark });
   }
   return out;
 }

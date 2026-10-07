@@ -538,8 +538,25 @@ async function main() {
     if (!existsSync(STATE)) process.exit(0);
     // Claude Code is gone; nothing to do until statusline.sh respawns us.
     if (Date.now() - lastTickSeen > cfg.idle_exit_ms) process.exit(0);
-    await sleep(cfg.cycle_ms);
+
+    // Rotation is local and cheap, so it does not wait for the network cycle.
+    // A creative that expired a second into the cycle used to leave every
+    // surface without one for the rest of it — up to half a minute of an empty
+    // line, and the desktop strip, which appears with the turn, just late.
+    const until = Date.now() + cfg.cycle_ms;
+    while (Date.now() < until) {
+      await sleep(Math.min(1000, until - Date.now()));
+      try { rotateLocally(); } catch { /* the next cycle rotates anyway */ }
+    }
   }
+}
+
+/** Between network cycles: move to the next queued creative once the current
+ *  one expires. Disk only, never the network; written only when it changed. */
+function rotateLocally() {
+  const queue = readJson(P.queue, null);
+  if (!Array.isArray(queue) || queue.length === 0) return;
+  if (rotateCurrent(queue, Date.now())) writeJson(P.queue, queue);
 }
 
 /**

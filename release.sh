@@ -5,7 +5,7 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-FILES="statusline.sh nojq.sh daemon.mjs install.sh uninstall.sh"
+FILES="statusline.sh nojq.sh daemon.mjs hook.mjs install.sh uninstall.sh tick-satellite-macos TICK.icns"
 
 if command -v shasum >/dev/null 2>&1; then
   shasum -a 256 $FILES > SHA256SUMS
