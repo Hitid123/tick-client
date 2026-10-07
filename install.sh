@@ -158,7 +158,7 @@ if [ "$DESKTOP" -eq 1 ]; then
   # item. Without a Developer ID every build counts as a new item, so we touch
   # the bundle and launchd only when what we ship actually changed. Reinstalling
   # the same version stays silent.
-  SOURCE="bundle-2 $(sha256 "$SRC/tick-satellite-macos") $( [ -f "$SRC/TICK.icns" ] && sha256 "$SRC/TICK.icns")"
+  SOURCE="bundle-3 $(sha256 "$SRC/tick-satellite-macos") $( [ -f "$SRC/TICK.icns" ] && sha256 "$SRC/TICK.icns")"
   APP_CHANGED=0
   if [ "$(cat "$APP/Contents/Resources/source" 2>/dev/null)" != "$SOURCE" ]; then
     APP_CHANGED=1
@@ -184,10 +184,12 @@ if [ "$DESKTOP" -eq 1 ]; then
 </dict>
 </plist>
 INFO_END
+    # The version marker goes in before signing: the signature seals every file
+    # in the bundle, and one written after it breaks the seal.
+    printf '%s' "$SOURCE" > "$APP/Contents/Resources/source"
     # Ad-hoc, as the binary already is: it binds Info.plist to the code, which
     # is all macOS needs to show the bundle's name. No Developer ID involved.
     codesign --force --sign - --identifier dev.gettick.satellite "$APP" 2>/dev/null || true
-    printf '%s' "$SOURCE" > "$APP/Contents/Resources/source"
   fi
 
   mkdir -p "$HOME/Library/LaunchAgents"
