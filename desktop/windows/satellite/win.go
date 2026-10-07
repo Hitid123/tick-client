@@ -19,16 +19,47 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 )
+
+// A few lines in state\satellite.log: that it started, what it found, and
+// anything that failed. A program with no console has nowhere else to say it,
+// and without this "the strip is gone" can only be guessed at from a distance.
+// Never anything about Claude's window beyond its size, never anything typed.
+var (
+	logFile *os.File
+	logged  = map[string]bool{}
+)
+
+func logf(format string, a ...any) {
+	if logFile == nil {
+		f, err := os.OpenFile(filepath.Join(paths.State, "satellite.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		logFile = f
+	}
+	fmt.Fprintf(logFile, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, a...))
+}
+
+// Once per kind of event, so a failure repeated sixteen times a second is one
+// line, not a full disk.
+func logOnce(key, format string, a ...any) {
+	if !logged[key] {
+		logged[key] = true
+		logf(format, a...)
+	}
+}
 
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
@@ -254,6 +285,11 @@ var (
 func findClaude() *claudeWin {
 	best = nil
 	pEnumWindows.Call(enumCallback, 0)
+	if best == nil {
+		logOnce("no-claude", "no Claude window found (looking for claude.exe, Chrome_WidgetWin_1)")
+	} else {
+		logOnce("claude", "Claude window found: %dx%d at dpi %d", best.r.R-best.r.L, best.r.B-best.r.T, best.dpi)
+	}
 	return best
 }
 
@@ -326,8 +362,10 @@ func claudeTheme() string {
 		}
 	}
 	if claudeConfig == "" {
+		logOnce("theme-none", "Claude's config.json not found; following the system theme")
 		return "system"
 	}
+	logOnce("theme", "Claude's config.json: %s", claudeConfig)
 	return str(readJSON(claudeConfig), "userThemeMode")
 }
 
@@ -498,15 +536,23 @@ func render(w, h int32, fresh bool) {
 	if memDC == 0 {
 		memDC, _, _ = pCreateCompatibleDC.Call(0)
 	}
-	if dib != 0 {
-		pDeleteObject.Call(dib)
-	}
 	bi := bitmapInfo{Size: 40, Width: w, Height: -h, Planes: 1, BitCount: 32}
 	// The pixel memory belongs to GDI, not to Go, and lives until the DIB is
 	// deleted; Go only looks at it through this slice.
 	var bits unsafe.Pointer
-	dib, _, _ = pCreateDIBSection.Call(memDC, uintptr(unsafe.Pointer(&bi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
-	pSelectObject.Call(memDC, dib)
+	next, _, err := pCreateDIBSection.Call(memDC, uintptr(unsafe.Pointer(&bi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	if next == 0 || bits == nil {
+		logOnce("dib", "CreateDIBSection failed for %dx%d: %v", w, h, err)
+		renderKey = ""
+		return
+	}
+	// The new image goes in before the old one is deleted: GDI will not delete
+	// an object that is still selected into a DC.
+	pSelectObject.Call(memDC, next)
+	if dib != 0 {
+		pDeleteObject.Call(dib)
+	}
+	dib = next
 	pixels = unsafe.Slice((*uint32)(bits), int(w)*int(h))
 
 	bg, _, _ := pCreateSolidBrush.Call(rgb(pal.surface))
@@ -566,8 +612,13 @@ func push(x, y, w, h int32, a int) {
 	size := struct{ CX, CY int32 }{w, h}
 	src := point{0, 0}
 	blend := [4]byte{0, 0, byte(a), 1} // AC_SRC_OVER, 0, constant alpha, AC_SRC_ALPHA
-	pUpdateLayeredWindow.Call(hwnd, 0, uintptr(unsafe.Pointer(&pos)), uintptr(unsafe.Pointer(&size)),
+	ok, _, err := pUpdateLayeredWindow.Call(hwnd, 0, uintptr(unsafe.Pointer(&pos)), uintptr(unsafe.Pointer(&size)),
 		memDC, uintptr(unsafe.Pointer(&src)), 0, uintptr(unsafe.Pointer(&blend)), 2 /* ULW_ALPHA */)
+	if ok == 0 {
+		logOnce("ulw", "UpdateLayeredWindow failed at %d,%d size %dx%d: %v", x, y, w, h, err)
+	} else {
+		logOnce("ulw-ok", "first strip drawn at %d,%d size %dx%d (scale %.2f, dark %v)", x, y, w, h, scale, dark)
+	}
 }
 
 func hide() {
@@ -706,7 +757,13 @@ func cursorX() int32 {
 	return p.X
 }
 
-func wndProc(w uintptr, m uint32, wp, lp uintptr) uintptr {
+func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
+	defer func() {
+		if r := recover(); r != nil {
+			logOnce(fmt.Sprint(r), "panic: %v\n%s", r, debug.Stack())
+			ret = 0
+		}
+	}()
 	switch m {
 	case wmTimer:
 		loop()
@@ -770,6 +827,7 @@ func main() {
 	// same real pixels on a scaled display.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 
+	logf("started, home %s", paths.Home)
 	inst, _, _ := pGetModuleHandleW.Call(0)
 	cls := u16("TickSatelliteStrip")
 	wc := wndClassEx{WndProc: syscall.NewCallback(wndProc), Instance: inst, ClassName: cls}
@@ -778,6 +836,10 @@ func main() {
 	hwnd, _, _ = pCreateWindowExW.Call(wsExLayered|wsExTopmost|wsExToolwindow|wsExNoactivate,
 		uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(u16("TICK"))), wsPopup,
 		0, 0, 10, 10, 0, 0, inst, 0)
+	if hwnd == 0 {
+		logf("could not create the strip window")
+		return
+	}
 	pSetTimer.Call(hwnd, 1, 60, 0)
 
 	var m msg
