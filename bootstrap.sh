@@ -1,12 +1,12 @@
 #!/bin/sh
 # TICK one-command installer.
 #
-#   curl -fsSL https://get.tick.dev | sh
+#   curl -fsSL https://raw.githubusercontent.com/Hitid123/tick-client/main/bootstrap.sh | sh
 #
 # If piping a stranger's script into a shell makes you uncomfortable, good.
 # Do this instead, it is the same thing with a reading step:
 #
-#   curl -fsSL https://get.tick.dev -o tick-install.sh
+#   curl -fsSL https://raw.githubusercontent.com/Hitid123/tick-client/main/bootstrap.sh -o tick-install.sh
 #   less tick-install.sh
 #   sh tick-install.sh
 #

@@ -28,24 +28,42 @@ case "$COLS" in ''|*[!0-9]*) COLS=80 ;; esac
 # stdout is a pipe into Claude Code, never a tty, so `[ -t 1 ]` would always say
 # "no colour". The environment is the only honest signal we have.
 
-MARKER=$(printf '\342\226\270')   # U+25B8
+MARKER=$(printf '\342\226\214')   # U+258C, a block cursor — the brand's mark
 ELLIPSIS=$(printf '\342\200\246') # U+2026
 SEP=$(printf '\302\267')          # U+00B7
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   '') ;;                                   # unset: assume UTF-8, as terminals do
   *UTF-8*|*utf-8*|*UTF8*|*utf8*) ;;
-  *) MARKER='>'; ELLIPSIS='~'; SEP='-' ;;  # C, POSIX, ISO-8859-*: stay in ASCII
+  *) MARKER='|'; ELLIPSIS='~'; SEP='-' ;;  # C, POSIX, ISO-8859-*: stay in ASCII
 esac
 
+# Three levels in one line, from the brand guide. The whole scheme in a sentence:
+# the marker is a disclosure and stays quiet, the offer arrives bright and settles
+# one step down after two seconds, and the promo code is the only coloured thing
+# on the line.
+#
+#   marker            #5F5C57  ANSI 59   muted always
+#   offer, 0-2 s      #F0EEE9  ANSI 255  full brightness as the line changes
+#   offer, after      #A8A49E  ANSI 248  one step down, and then never again
+#   promo code        #FFB000  ANSI 214  bold, the single accent
+#
 # NO_COLOR is honoured as specified at no-color.org; TERM=dumb has no SGR at all.
-COLOR_ON=$(printf '\033[38;5;173m')
-COLOR_OFF=$(printf '\033[0m')
+COLOR=1
 if [ -n "${NO_COLOR+set}" ]; then
-  COLOR_ON=''; COLOR_OFF=''
+  COLOR=0
 else
   case "${TERM:-}" in
-    dumb|'') COLOR_ON=''; COLOR_OFF='' ;;
+    dumb|'') COLOR=0 ;;
   esac
+fi
+
+MARK_ON=''; TEXT_FRESH=''; TEXT_SETTLED=''; PROMO_ON=''; COLOR_OFF=''
+if [ "$COLOR" -eq 1 ]; then
+  MARK_ON=$(printf '\033[38;5;59m')
+  TEXT_FRESH=$(printf '\033[38;5;255m')
+  TEXT_SETTLED=$(printf '\033[38;5;248m')
+  PROMO_ON=$(printf '\033[1;38;5;214m')
+  COLOR_OFF=$(printf '\033[0m')
 fi
 
 # OSC 8 hyperlinks are officially supported in the status line. Terminals that do
@@ -56,34 +74,23 @@ case "${TERM:-}" in dumb|'') LINKS=0 ;; esac
 
 emit() {
   # $1 = visible text, already fitted. $2 = click URL, may be empty.
-  # $3 = "1" while the creative is newly arrived.
+  # $3 = "1" for the first two seconds of this offer, "0" afterwards.
   #
-  # A new line gets the accent colour for its first few seconds and then settles
-  # into the terminal's own. That is an entrance, not a strobe: it is noticed
-  # once, by the one thing eyes are actually good at, and then it stops asking
-  # for attention. Blinking text would be noticed every second forever, which is
-  # how a status line becomes the reason someone uninstalls.
+  # The fade happens once per offer and does not repeat. There is movement
+  # exactly when the line changed, and it is gone the moment it has been read.
+  # Blinking text would be noticed every second forever, which is how a status
+  # line becomes the reason somebody uninstalls.
   if [ -z "$1" ]; then
     printf '\n'
     return
   fi
-  # Three steps rather than one, because a single on/off is easy to miss if you
-  # happen to glance a second late. Bold accent while it is brand new, plain
-  # accent while it is still recent, then the terminal's own colour. It reads as
-  # settling down — which is a thing eyes follow — without ever flashing.
-  if [ -n "$COLOR_ON" ] && [ "$3" = "2" ]; then
-    TEXT_ON="$(printf '\033[1m')$COLOR_ON"; TEXT_OFF="$COLOR_OFF"
-  elif [ -n "$COLOR_ON" ] && [ "$3" = "1" ]; then
-    TEXT_ON="$COLOR_ON"; TEXT_OFF="$COLOR_OFF"
-  else
-    TEXT_ON=''; TEXT_OFF=''
-  fi
   if [ "$LINKS" -eq 1 ] && [ -n "$2" ]; then
     # \033]8;;URL\a TEXT \033]8;;\a  — the URL is invisible and costs no width.
     printf '%s%s%s \033]8;;%s\a%s%s%s\033]8;;\a\n' \
-      "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$2" "$TEXT_ON" "$1" "$TEXT_OFF"
+      "$MARK_ON" "$MARKER" "$COLOR_OFF" "$2" "$TEXT_ON" "$1" "$COLOR_OFF"
   else
-    printf '%s%s%s %s%s%s\n' "$COLOR_ON" "$MARKER" "$COLOR_OFF" "$TEXT_ON" "$1" "$TEXT_OFF"
+    printf '%s%s%s %s%s%s\n' \
+      "$MARK_ON" "$MARKER" "$COLOR_OFF" "$TEXT_ON" "$1" "$COLOR_OFF"
   fi
 }
 
@@ -191,10 +198,11 @@ if command -v jq >/dev/null 2>&1; then
       (if $live != null then ($live.click_url | safe_url) else "" end),
       # The promo code, so the one actionable word can be picked out of the line.
       (if $live != null then ($live.promo_code // "" | clean) else "" end),
-      # How recently this creative arrived: 2 = just now, 1 = still recent, 0 = settled.
+      # How recently this creative arrived: 1 for the first two seconds, then 0.
+      # The script already knows how long the current offer has been up, so the
+      # shade comes out of that number — no network call, no second process.
       (if $live == null then "0"
-       else (($now - ($live.shown_at // 0))) as $age
-         | if $age < 5000 then "2" elif $age < 15000 then "1" else "0" end
+       else (if ($now - ($live.shown_at // 0)) < 2000 then "1" else "0" end)
        end),
       ({ ts: $now,
          sid: ($in.session_id | clean),
@@ -219,19 +227,26 @@ if [ -z "$TICKLINE" ] && [ -f "$TICK_HOME/nojq.sh" ]; then
   . "$TICK_HOME/nojq.sh" 2>/dev/null
 fi
 
+# The shade of the offer text, picked from how long it has been up.
+TEXT_ON=''
+if [ "$COLOR" -eq 1 ]; then
+  if [ "$FRESH" = "1" ]; then TEXT_ON="$TEXT_FRESH"; else TEXT_ON="$TEXT_SETTLED"; fi
+fi
+
 # A promo code is the one word in the line a reader can act on, so it is the one
-# word that gets its own colour. Green reads as "offer" in every shop window
-# there has ever been, and unlike the arrival effect it stays: the code is still
-# useful on the fifth minute. Substitution is plain parameter expansion, so a
-# code that got truncated away simply is not found and nothing happens.
-if [ -n "$PROMO" ] && [ -n "$COLOR_ON" ]; then
+# word that gets its own colour, and the only coloured thing on the line. Unlike
+# the arrival fade it stays: the code is still useful on the fifth minute.
+# Substitution is plain parameter expansion, so a code that got truncated away
+# simply is not found and nothing happens.
+if [ -n "$PROMO" ] && [ "$COLOR" -eq 1 ]; then
   case "$DISPLAY" in
     *"$PROMO"*)
       _pre=${DISPLAY%%"$PROMO"*}
       _post=${DISPLAY#*"$PROMO"}
-      # Closing with the prevailing colour, not a reset, so the promo does not
-      # punch a hole in the arrival highlight while that is still running.
-      DISPLAY="$_pre$(printf '\033[38;5;71m')$PROMO$(printf '\033[0m')$_post"
+      # Closing with the prevailing shade rather than a reset, or the promo
+      # punches a hole in the rest of the line and everything after it goes
+      # back to the terminal's own colour.
+      DISPLAY="$_pre$PROMO_ON$PROMO$TEXT_ON$_post"
       ;;
   esac
 fi

@@ -1,0 +1,41 @@
+{
+  "name": "tick",
+  "displayName": "TICK",
+  "description": "One sponsored line in your editor status bar, for Claude Code and Codex. 70% of gross goes to you, paid in crypto from $5.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "tick",
+  "repository": { "type": "git", "url": "https://github.com/Hitid123/tick-client" },
+  "engines": { "vscode": "^1.75.0" },
+  "icon": "icon.png",
+  "categories": ["Other"],
+  "keywords": ["claude code", "codex", "status bar", "tick"],
+  "main": "./src/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "tick.setUp", "title": "TICK: Set up in this editor" },
+      { "command": "tick.status", "title": "TICK: Show status" },
+      { "command": "tick.openClick", "title": "TICK: Open the sponsored link" },
+      { "command": "tick.turnOff", "title": "TICK: Turn off in this editor" }
+    ],
+    "configuration": {
+      "title": "TICK",
+      "properties": {
+        "tick.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the TICK line in the status bar."
+        },
+        "claudeCode.spinnerVerbs": {
+          "type": "object",
+          "default": null,
+          "markdownDescription": "Words the Claude Code panel shows while the model works. Claude Code reads this setting but does not declare it, so no extension may write it until one does; TICK declares it here in order to put its line there. Owned by whoever set it: if the value is not TICK's own, TICK never touches it again."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce@latest package --out ../../dist/tick.vsix"
+  }
+}

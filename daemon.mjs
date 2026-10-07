@@ -36,13 +36,14 @@ const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'
 
 // Business rules stay configurable (TZ section 16). Client-side subset only.
 const DEFAULTS = {
-  api_base: 'https://api.tick.dev/api/v1',
+  api_base: 'https://gettick.dev/api/v1',
   cycle_ms: 30_000,
   impression_ms: 5_000,
   tick_max_gap_ms: 10_000,
   active_window_ms: 120_000,
   queue_low_water: 3,
   queue_fetch: 10,
+  fetch_backoff_max_ms: 30 * 60_000,
   idle_exit_ms: 15 * 60_000,
   request_timeout_ms: 5_000,
   request_attempts: 3,
@@ -177,6 +178,40 @@ export function buildBatch(items, salt) {
       model: i.model,
     })),
   };
+}
+
+// ------------------------------------------------------------------- queue
+
+/**
+ * Whether to ask the server for more creatives, and how many.
+ *
+ * Asking is not free. The server counts a hand-out against the device's daily
+ * frequency cap, so a client that asks four times has spent the whole day's
+ * allowance for that campaign whether or not anything was ever displayed.
+ *
+ * Two things went wrong before this existed. The queue only refills below the
+ * low-water mark, but with fewer live campaigns than that mark the queue can
+ * never reach it — so the daemon asked every single cycle, burned the default
+ * cap of four in two minutes, and the line went dark for the rest of the day.
+ * That is the normal state of a young network, not an edge case. And asking for
+ * ten when two are needed spends cap on eight campaigns that will not be shown
+ * before the next request anyway.
+ *
+ * So: ask for what is missing, not for a bucketful, and after a request that
+ * brought back nothing new, wait longer each time before asking again.
+ */
+export function fetchPlan(queue, cfg, state, now) {
+  if (queue.length >= cfg.queue_low_water) return { fetch: false, n: 0 };
+  if (now < state.until) return { fetch: false, n: 0 };
+  const missing = cfg.queue_low_water - queue.length;
+  return { fetch: true, n: Math.max(1, Math.min(cfg.queue_fetch, missing)) };
+}
+
+/** Back off while there is nothing to be had; snap back the moment there is. */
+export function backoffAfter(gained, state, cfg, now) {
+  if (gained > 0) return { until: 0, step: 0 };
+  const step = Math.min(cfg.fetch_backoff_max_ms, (state.step || cfg.cycle_ms) * 2);
+  return { until: now + step, step };
 }
 
 // ------------------------------------------------------------------ identity
@@ -400,6 +435,9 @@ function syncSpinner(cfg) {
   }
 }
 
+/** How long to wait before asking for creatives again. See fetchPlan. */
+let fetchState = { until: 0, step: 0 };
+
 async function cycle(cfg, device, cycleNo) {
   const now = Date.now();
 
@@ -435,12 +473,15 @@ async function cycle(cfg, device, cycleNo) {
     }
 
     const queue = readJson(P.queue, []) ?? [];
-    if (queue.length < cfg.queue_low_water) {
-      const res = await request(cfg, 'GET', `/creatives?n=${cfg.queue_fetch}`, undefined, device.token);
+    const plan = fetchPlan(queue, cfg, fetchState, Date.now());
+    if (plan.fetch) {
+      const res = await request(cfg, 'GET', `/creatives?n=${plan.n}`, undefined, device.token);
+      let gained = 0;
       if (res.ok && Array.isArray(res.json?.creatives)) {
         const seen = new Set(queue.map((c) => c.creative_id));
         for (const c of res.json.creatives) {
           if (!c?.creative_id || typeof c.text !== 'string' || seen.has(c.creative_id)) continue;
+          seen.add(c.creative_id);
           queue.push({
             creative_id: c.creative_id,
             text: c.text,
@@ -448,8 +489,10 @@ async function cycle(cfg, device, cycleNo) {
             ...(typeof c.click_url === 'string' ? { click_url: c.click_url } : {}),
             ...(typeof c.promo_code === 'string' ? { promo_code: c.promo_code } : {}),
           });
+          gained += 1;
         }
       }
+      fetchState = backoffAfter(gained, fetchState, cfg, Date.now());
     }
 
     if (cycleNo % 10 === 0) {
