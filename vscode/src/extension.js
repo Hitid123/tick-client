@@ -25,6 +25,7 @@ const P = {
   hook: path.join(HOME, 'hook.mjs'),
   current: path.join(STATE, 'current.json'),
   balance: path.join(STATE, 'balance.json'),
+  device: path.join(STATE, 'device.json'),
   carry: path.join(STATE, 'carry.json'),
   ticks: path.join(STATE, 'ticks.ndjson'),
   pid: path.join(STATE, 'daemon.pid'),
@@ -769,10 +770,37 @@ function showStatus(channel) {
   ];
 
   log(channel, `status — ${why.join(' ')} | ${detail.join(' · ')}`);
-  vscode.window.showInformationMessage(why.join(' '), 'Details', 'Open log').then((pick) => {
+  vscode.window.showInformationMessage(why.join(' '), 'Details', 'Dashboard', 'Open log').then((pick) => {
     if (pick === 'Details') vscode.window.showInformationMessage(detail.join('   ·   '));
+    if (pick === 'Dashboard') openDashboard();
     if (pick === 'Open log') channel.show(true);
   });
+}
+
+/**
+ * Payouts are requested in the dashboard, and the dashboard knows a publisher
+ * by the device token the daemon was issued. In a terminal that token is one
+ * `jq` away; on Windows, where this extension is the whole client, nobody would
+ * find it, and a balance nobody can withdraw is not earnings. So the token goes
+ * on the clipboard and the page opens. Never into the URL: a token in a URL ends
+ * up in browser history, proxy logs and screenshots.
+ */
+async function openDashboard() {
+  const config = readJson(P.config, {}) || {};
+  const url = core.dashboardUrl(config.api_base);
+  const device = readJson(P.device, null);
+  const token = device && typeof device.token === 'string' ? device.token : '';
+  if (!/^[0-9a-f]{32,128}$/.test(token)) {
+    vscode.window.showInformationMessage(
+      'This machine has not registered yet. It does so by itself the first time an agent turn runs; try again after one.',
+    );
+    return;
+  }
+  await vscode.env.clipboard.writeText(token);
+  vscode.env.openExternal(vscode.Uri.parse(url));
+  vscode.window.showInformationMessage(
+    'Your device token is on the clipboard. Paste it into the dashboard to see your earnings and request a payout. Treat it like a password.',
+  );
 }
 
 // -------------------------------------------------------------------- entry
@@ -793,6 +821,7 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('tick.setUp', () => offerSetUp(context, channel, { force: true })),
     vscode.commands.registerCommand('tick.status', () => showStatus(channel)),
+    vscode.commands.registerCommand('tick.dashboard', () => openDashboard()),
     vscode.commands.registerCommand('tick.openClick', () => {
       // The server counts the click at the other end of this redirect, exactly
       // as it does for the terminal's OSC 8 link. The client never reports a

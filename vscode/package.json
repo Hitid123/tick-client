@@ -1,6 +1,6 @@
 {
-  "name": "tick",
-  "displayName": "TICK",
+  "name": "gettick",
+  "displayName": "TICK for Claude Code & Codex",
   "description": "One sponsored line in your editor status bar, for Claude Code and Codex. 70% of gross goes to you, paid in crypto from $5.",
   "version": "0.1.0",
   "license": "MIT",
@@ -16,6 +16,7 @@
     "commands": [
       { "command": "tick.setUp", "title": "TICK: Set up in this editor" },
       { "command": "tick.status", "title": "TICK: Show status" },
+      { "command": "tick.dashboard", "title": "TICK: Open dashboard" },
       { "command": "tick.openClick", "title": "TICK: Open the sponsored link" },
       { "command": "tick.turnOff", "title": "TICK: Turn off in this editor" }
     ],

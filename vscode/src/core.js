@@ -104,6 +104,22 @@ function safeUrl(value) {
   return /^https?:\/\/[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$/.test(s) ? s : '';
 }
 
+const SITE = 'https://gettick.dev';
+
+/**
+ * Where a publisher sees earnings and asks for a payout: the dashboard on the
+ * same server the daemon talks to. Plain http only for a local dev server; any
+ * other address that does not parse falls back to ours rather than to nothing.
+ */
+function dashboardUrl(apiBase) {
+  try {
+    const u = new URL(String(apiBase || ''));
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && local)) return `${u.origin}/dashboard`;
+  } catch { /* not a URL */ }
+  return `${SITE}/dashboard`;
+}
+
 /** Whole micro-dollars to "1.23". Integer arithmetic, like the ledger. */
 function usd(micros) {
   const n = typeof micros === 'number' && Number.isFinite(micros) ? micros : 0;
@@ -711,6 +727,8 @@ module.exports = {
   removeCodexHooks,
   sanitizeText,
   safeUrl,
+  SITE,
+  dashboardUrl,
   usd,
   render,
   activityOf,
