@@ -32,6 +32,23 @@ Removing it is one command and leaves nothing behind:
 
 Requirements: `jq`, Node 20+, and a terminal. That is all.
 
+### Windows: the Claude desktop app
+
+On Windows TICK runs in the Claude desktop app, through a small program of ours that
+draws the line over it (the same as the Mac's desktop satellite, below). It needs Node 20+.
+In PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/Hitid123/tick-client/main/install-windows.mjs -OutFile $env:TEMP\tick-install.mjs
+node $env:TEMP\tick-install.mjs
+```
+
+It checks every file against `SHA256SUMS` like the Mac installer, adds three hook entries
+to `%USERPROFILE%\.claude\settings.json` (backed up first), and one value under
+`HKCU\...\CurrentVersion\Run` so it starts at login. Removing it:
+`node %USERPROFILE%\.tick\install-windows.mjs --uninstall`. In an editor on Windows, the
+[TICK extension](https://marketplace.visualstudio.com/items?itemName=tick.gettick) is the way.
+
 ## Where it works
 
 Only what works today gets a yes. No roadmap entries in this table.
