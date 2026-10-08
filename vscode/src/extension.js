@@ -23,6 +23,7 @@ const P = {
   config: path.join(HOME, 'config.json'),
   daemon: path.join(HOME, 'daemon.mjs'),
   hook: path.join(HOME, 'hook.mjs'),
+  opencodePlugin: path.join(HOME, 'opencode-plugin.js'),
   current: path.join(STATE, 'current.json'),
   balance: path.join(STATE, 'balance.json'),
   device: path.join(STATE, 'device.json'),
@@ -45,6 +46,26 @@ const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 // editor draws, and Codex only has to say when its model is working.
 const CODEX_DIR = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const CODEX_CONFIG = path.join(CODEX_DIR, 'config.toml');
+
+// The editors that are VS Code underneath, each with its own agent and its own
+// hook file. Paths read from the installed builds and their docs on 08.10.
+const HOST = core.hostOf(vscode.env.appName);
+const CURSOR_HOOKS = path.join(os.homedir(), '.cursor', 'hooks.json');
+const DEVIN_CONFIG = process.platform === 'win32'
+  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'devin', 'config.json')
+  : path.join(os.homedir(), '.config', 'devin', 'config.json');
+
+// OpenCode has no command hooks; it loads plugins from this folder, and ours
+// writes the same three-field note the hook does (client/opencode-plugin.js).
+const OPENCODE_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
+const OPENCODE_PLUGIN = path.join(OPENCODE_DIR, 'plugins', 'tick.js');
+
+/** Every agent we can register with, and the file each one keeps it in. */
+const AGENT_TAGS = ['cc', 'cx', 'cu', 'dv', 'oc'];
+const AGENT_FILES = {
+  cc: '~/.claude/settings.json', cx: '~/.codex/config.toml', cu: '~/.cursor/hooks.json',
+  dv: '~/.config/devin/config.json', oc: '~/.config/opencode/plugins/tick.js',
+};
 
 const DECLINED = 'tick.setUpDeclined';
 const TICKS_MAX_BYTES = 2 * 1024 * 1024;
@@ -83,6 +104,11 @@ function agentsPresent() {
   return {
     cc: fs.existsSync(CLAUDE_DIR),
     cx: fs.existsSync(CODEX_DIR),
+    // An editor's own agent matters only in that editor, and is there by
+    // definition when we are.
+    cu: HOST === 'cursor',
+    dv: HOST === 'devin',
+    oc: fs.existsSync(OPENCODE_DIR),
   };
 }
 
@@ -213,6 +239,7 @@ function ensureHome(context, log) {
     for (const [name, dest, alwaysOurs] of [
       ['daemon.mjs', P.daemon, false],
       ['hook.mjs', P.hook, true],
+      ['opencode-plugin.js', P.opencodePlugin, true],
     ]) {
       const src = path.join(context.extensionPath, 'vendor', name);
       if (!fs.existsSync(src)) continue;
@@ -281,7 +308,8 @@ function installHooks(log) {
     if (fs.existsSync(SETTINGS)) {
       fs.copyFileSync(SETTINGS, path.join(HOME, `settings.backup.${stamp()}.json`));
     }
-    const { settings: next } = core.addHooks(settings, command);
+    const { settings: withHooks } = core.addHooks(settings, command);
+    const { settings: next } = core.addHeartbeat(withHooks, command);
     writeJsonAtomic(SETTINGS, next, true);
     writeJsonAtomic(P.installed, {
       ...(readJson(P.installed, {}) || {}), claude: command, events: core.HOOK_EVENTS, at: Date.now(),
@@ -330,6 +358,94 @@ function installCodexHooks(log) {
   }
 }
 
+/**
+ * The heartbeat for installs made before it existed (see core.js). Our three
+ * hooks there mean the person already agreed to this one entry of ours; it is
+ * the same command, one more event, backed up first like every write.
+ */
+function ensureHeartbeat(log) {
+  const command = hookCommand('cc');
+  const settings = readJson(SETTINGS, null);
+  if (!settings || typeof settings !== 'object' || !core.hooksInstalled(settings, command)) return;
+  if (core.heartbeatInstalled(settings, command)) return;
+  try {
+    fs.copyFileSync(SETTINGS, path.join(HOME, `settings.backup.${stamp()}.json`));
+    writeJsonAtomic(SETTINGS, core.addHeartbeat(settings, command).settings, true);
+    log('Claude Code heartbeat added: a long turn keeps its line');
+  } catch (e) {
+    log(`heartbeat: ${e && e.message}`);
+  }
+}
+
+/** Cursor's own agent: ~/.cursor/hooks.json, Cursor's format (see core.js). */
+function installCursorHooks(log) {
+  const command = hookCommand('cu');
+  const existing = readJson(CURSOR_HOOKS, null);
+  if (core.cursorHooksInstalled(existing, command)) return { ok: true, already: true };
+  try {
+    fs.mkdirSync(path.dirname(CURSOR_HOOKS), { recursive: true });
+    if (fs.existsSync(CURSOR_HOOKS)) {
+      if (existing === null) throw new Error('~/.cursor/hooks.json is not valid JSON; fix it first');
+      fs.copyFileSync(CURSOR_HOOKS, path.join(HOME, `cursor-hooks.backup.${stamp()}.json`));
+    }
+    writeJsonAtomic(CURSOR_HOOKS, core.addCursorHooks(existing, command).file, true);
+    writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), cursor: command, at: Date.now() });
+    log('Cursor activity hook registered');
+    return { ok: true, already: false };
+  } catch (e) {
+    log(`Cursor hook registration failed: ${e && e.message}`);
+    return { ok: false, error: e && e.message };
+  }
+}
+
+/** Devin: the "hooks" key of its user config, in Claude Code's own format —
+ *  Devin adopted it whole. It also reads ~/.claude/settings.json, so where
+ *  Claude Code is set up this is a second copy of the same entry, which only
+ *  writes the same note twice. */
+function installDevinHooks(log) {
+  const command = hookCommand('cc');
+  const existing = readJson(DEVIN_CONFIG, null);
+  const config = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
+  if (core.hooksInstalled(config, command)) return { ok: true, already: true };
+  try {
+    fs.mkdirSync(path.dirname(DEVIN_CONFIG), { recursive: true });
+    if (fs.existsSync(DEVIN_CONFIG)) {
+      if (existing === null) throw new Error('the Devin config is not valid JSON; fix it first');
+      fs.copyFileSync(DEVIN_CONFIG, path.join(HOME, `devin-config.backup.${stamp()}.json`));
+    }
+    writeJsonAtomic(DEVIN_CONFIG, core.addHooks(config, command).settings, true);
+    writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), devin: command, at: Date.now() });
+    log('Devin activity hook registered');
+    return { ok: true, already: false };
+  } catch (e) {
+    log(`Devin hook registration failed: ${e && e.message}`);
+    return { ok: false, error: e && e.message };
+  }
+}
+
+/** OpenCode: our plugin file in its plugins folder, a copy of ~/.tick's. */
+function installOpenCodePlugin(log) {
+  try {
+    const ours = fs.readFileSync(P.opencodePlugin);
+    if (fs.existsSync(OPENCODE_PLUGIN) && fs.readFileSync(OPENCODE_PLUGIN).equals(ours)) return { ok: true, already: true };
+    fs.mkdirSync(path.dirname(OPENCODE_PLUGIN), { recursive: true });
+    fs.writeFileSync(OPENCODE_PLUGIN, ours);
+    log('OpenCode activity plugin installed');
+    return { ok: true, already: false };
+  } catch (e) {
+    log(`OpenCode plugin install failed: ${e && e.message}`);
+    return { ok: false, error: e && e.message };
+  }
+}
+
+function installFor(agent, log) {
+  if (agent === 'cc') return installHooks(log);
+  if (agent === 'cx') return installCodexHooks(log);
+  if (agent === 'cu') return installCursorHooks(log);
+  if (agent === 'dv') return installDevinHooks(log);
+  return installOpenCodePlugin(log);
+}
+
 function uninstallHooks(log) {
   const recorded = readJson(P.installed, null) || {};
   const ccCommand = recorded.claude || recorded.command || hookCommand('cc');
@@ -360,6 +476,31 @@ function uninstallHooks(log) {
     }
   }
 
+  const cursor = readJson(CURSOR_HOOKS, null);
+  if (cursor && typeof cursor === 'object') {
+    try {
+      const { file, changed } = core.removeCursorHooks(cursor, recorded.cursor || hookCommand('cu'));
+      if (changed) { writeJsonAtomic(CURSOR_HOOKS, file, true); log('Cursor activity hook removed'); }
+    } catch (e) { log(`Cursor hook removal failed: ${e && e.message}`); ok = false; }
+  }
+
+  const devin = readJson(DEVIN_CONFIG, null);
+  if (devin && typeof devin === 'object') {
+    try {
+      const { settings: next, changed } = core.removeHooks(devin, recorded.devin || hookCommand('cc'));
+      if (changed) { writeJsonAtomic(DEVIN_CONFIG, next, true); log('Devin activity hook removed'); }
+    } catch (e) { log(`Devin hook removal failed: ${e && e.message}`); ok = false; }
+  }
+
+  // Only our own file: the same bytes we put there.
+  try {
+    if (fs.existsSync(OPENCODE_PLUGIN) && fs.existsSync(P.opencodePlugin)
+        && fs.readFileSync(OPENCODE_PLUGIN).equals(fs.readFileSync(P.opencodePlugin))) {
+      fs.unlinkSync(OPENCODE_PLUGIN);
+      log('OpenCode activity plugin removed');
+    }
+  } catch (e) { log(`OpenCode plugin removal failed: ${e && e.message}`); ok = false; }
+
   try { fs.unlinkSync(P.installed); } catch { /* never written */ }
   return ok;
 }
@@ -368,7 +509,7 @@ function uninstallHooks(log) {
 function refreshSetupState() {
   const present = agentsPresent();
   const have = registered();
-  pendingSetup = ['cc', 'cx'].filter((a) => present[a] && !have[a]);
+  pendingSetup = AGENT_TAGS.filter((a) => present[a] && !have[a]);
 }
 
 /** Which agents we are registered with right now, read from their own files
@@ -377,6 +518,10 @@ function registered() {
   return {
     cc: core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
     cx: core.codexHooksInstalled(readText(CODEX_CONFIG), hookCommand('cx')),
+    cu: core.cursorHooksInstalled(readJson(CURSOR_HOOKS, null), hookCommand('cu')),
+    dv: core.hooksInstalled(readJson(DEVIN_CONFIG, {}) || {}, hookCommand('cc'))
+      || core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
+    oc: fs.existsSync(OPENCODE_PLUGIN),
   };
 }
 
@@ -394,6 +539,7 @@ let lastFocusedTs = 0;   // when this window last had the person's attention
 let cycleNo = 0;
 const owner = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
 const sessions = new Map(); // sessionId -> { api_ms, dur_ms, lastTickTs }
+let countedLast = null;      // the session this window counted last cycle
 
 function log(channel, message) {
   try { channel.appendLine(`[${new Date().toISOString()}] ${message}`); } catch { /* disposed */ }
@@ -409,7 +555,7 @@ function activityMarks() {
     const sessionId = core.safeSessionId(name.slice(0, -5));
     if (!sessionId) continue;
     const mark = readJson(path.join(P.activity, name), null);
-    if (core.countsInEditor(mark)) out.push({ sessionId, mark });
+    if (core.countsInEditor(mark, HOST)) out.push({ sessionId, mark });
   }
   return out;
 }
@@ -475,6 +621,8 @@ function accountFor(view, now, channel) {
   const carry = readJson(P.carry, {}) || {};
   let pending = null; // read at most once per cycle, and only if needed
 
+  // Every session this window could count.
+  const candidates = [];
   for (const { sessionId, mark } of marks) {
     const { working, lastWorkTs } = core.activityOf(mark, now);
     if (!core.withinWindow(lastWorkTs, now)) {
@@ -487,9 +635,24 @@ function accountFor(view, now, channel) {
       sessions.delete(sessionId);
       continue;
     }
+    candidates.push({ sessionId, mark, working });
+  }
 
-    if (!claim(sessionId, now)) continue;
+  // But one status bar is one display. Two agents busy in one window showed
+  // one line and, until 08.10, wrote two streams of ticks for it: two
+  // impressions for one thing on screen. Now the window counts one session,
+  // the way the desktop strip always has — a working one first, the one it was
+  // already counting next, then the most recent — and claims only that one,
+  // so another window is free to count the rest.
+  candidates.sort((a, b) => (Number(b.working) - Number(a.working))
+    || (Number(b.sessionId === countedLast) - Number(a.sessionId === countedLast))
+    || ((b.mark.ts || 0) - (a.mark.ts || 0)));
+  const chosen = candidates.find((c) => claim(c.sessionId, now));
+  for (const c of candidates) if (c !== chosen) sessions.delete(c.sessionId);
+  countedLast = chosen ? chosen.sessionId : null;
 
+  if (chosen) {
+    const { sessionId, mark, working } = chosen;
     const { state, tick } = core.advance(sessions.get(sessionId), {
       sid: core.panelSid(sessionId),
       cid: view.cid,
@@ -674,8 +837,8 @@ async function offerSetUp(context, channel, { force } = { force: false }) {
 
   const present = agentsPresent();
   const have = registered();
-  const todo = ['cc', 'cx'].filter((a) => present[a] && !have[a]);
-  if (todo.length === 0) return present.cc || present.cx;
+  const todo = AGENT_TAGS.filter((a) => present[a] && !have[a]);
+  if (todo.length === 0) return AGENT_TAGS.some((a) => present[a]);
   if (!force && context.globalState.get(DECLINED) === true) return false;
 
   const node = resolveNode();
@@ -684,9 +847,7 @@ async function offerSetUp(context, channel, { force } = { force: false }) {
     : ' Node 20+ was not found on PATH; the hook needs it, so install Node before setting up.';
 
   const names = todo.map((a) => core.agentName(a)).join(' and ');
-  const files = todo
-    .map((a) => (a === 'cc' ? '~/.claude/settings.json' : '~/.codex/config.toml'))
-    .join(' and ');
+  const files = todo.map((a) => AGENT_FILES[a]).join(' and ');
 
   const answer = await vscode.window.showInformationMessage(
     `TICK needs to know when ${names} is working, so it only counts a line that was actually on screen.`
@@ -704,7 +865,7 @@ async function offerSetUp(context, channel, { force } = { force: false }) {
 
   const failed = [];
   for (const agent of todo) {
-    const res = agent === 'cc' ? installHooks((m) => log(channel, m)) : installCodexHooks((m) => log(channel, m));
+    const res = installFor(agent, (m) => log(channel, m));
     if (!res.ok) failed.push(`${core.agentName(agent)}: ${res.error}`);
   }
   if (failed.length > 0) {
@@ -757,7 +918,7 @@ function showStatus(channel) {
 
   const present = agentsPresent();
   const have = registered();
-  const hooks = ['cc', 'cx']
+  const hooks = AGENT_TAGS
     .filter((a) => present[a])
     .map((a) => `${core.agentName(a)} ${have[a] ? 'registered' : 'not registered'}`)
     .join(', ') || 'no agent found on this machine';
@@ -847,6 +1008,7 @@ function activate(context) {
   );
 
   ensureHome(context, (m) => log(channel, m));
+  ensureHeartbeat((m) => log(channel, m));
   refreshSetupState();
   offerSetUp(context, channel).catch((e) => log(channel, `setup: ${e && e.message}`));
 
@@ -855,7 +1017,7 @@ function activate(context) {
   }, core.PANEL_DEFAULTS.tick_ms);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
-  log(channel, `activated, home=${HOME}`);
+  log(channel, `activated in ${vscode.env.appName} (${HOST}), home=${HOME}`);
 }
 
 function deactivate() {

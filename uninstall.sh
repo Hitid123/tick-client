@@ -43,6 +43,34 @@ if [ -f "$PLIST" ]; then
   say 'stopped the desktop satellite and removed its login item'
 fi
 
+# --- the Codex hook and the OpenCode plugin -----------------------------------
+# Only what the installer recorded adding, and only our own bytes.
+if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
+  CODEX_CONFIG=$(jq -r '.codex_config // empty' "$MANIFEST")
+  if [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && [ -f "$CODEX_CONFIG" ] \
+     && command -v node >/dev/null 2>&1; then
+    # The block between our two markers, and the blank line before it. A file
+    # we created that holds nothing else afterwards goes too.
+    node - "$CODEX_CONFIG" <<'NODE' && say 'removed our Codex hook from config.toml'
+const fs = require('node:fs');
+const file = process.argv[2];
+const s = fs.readFileSync(file, 'utf8');
+const start = s.indexOf('# >>> TICK activity hook');
+const endMark = start === -1 ? -1 : s.indexOf('# <<< TICK activity hook', start);
+if (endMark === -1) process.exit(1);
+const before = s.slice(0, start).replace(/\n+$/, start > 0 ? '\n' : '');
+const after = s.slice(endMark + '# <<< TICK activity hook'.length).replace(/^\n+/, '');
+const next = `${before}${after}`;
+if (next.trim() === '') fs.unlinkSync(file); else fs.writeFileSync(file, next);
+NODE
+  fi
+  OPENCODE_PLUGIN=$(jq -r '.opencode_plugin // empty' "$MANIFEST")
+  if [ -n "$OPENCODE_PLUGIN" ] && cmp -s "$OPENCODE_PLUGIN" "$TICK_HOME/opencode-plugin.js" 2>/dev/null; then
+    rm -f "$OPENCODE_PLUGIN"
+    say 'removed our OpenCode plugin'
+  fi
+fi
+
 # --- restore settings.json ---------------------------------------------------
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
   SETTINGS=$(jq -r '.settings' "$MANIFEST")
@@ -89,6 +117,18 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
           | if .hooks == {} then del(.hooks) else . end
         else . end' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
       say 'removed our activity hook'
+    fi
+    # Only the heartbeat was ours (the editor extension owns the other three):
+    # take it from PostToolUse alone.
+    BEAT_CMD=$(jq -r '.heartbeat // empty' "$MANIFEST")
+    if [ -n "$BEAT_CMD" ]; then
+      jq --arg cmd "$BEAT_CMD" '
+        if (.hooks.PostToolUse | type) == "array" then
+          .hooks.PostToolUse |= (map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $cmd)) else . end)
+                                 | map(select((.hooks | type) != "array" or (.hooks | length) > 0)))
+          | if .hooks.PostToolUse == [] then del(.hooks.PostToolUse) else . end
+        else . end' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
+      say 'removed our heartbeat hook'
     fi
 
     # The daemon may have appended a spinner verb for the user's own line.

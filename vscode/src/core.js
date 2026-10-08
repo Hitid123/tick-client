@@ -58,15 +58,39 @@ const WORK_STARTS = 'UserPromptSubmit';
  * it does not have to. The renderer is the editor, and all we need from the
  * agent is "is the model running right now", which its hooks answer.
  */
-const AGENTS = { cc: 'Claude Code', cx: 'Codex' };
+const AGENTS = {
+  cc: 'Claude Code', cx: 'Codex', cu: 'Cursor', dv: 'Devin', oc: 'OpenCode',
+  cd: 'Claude', xd: 'Codex',
+};
 
 /**
- * Marks an editor window may count. A session in the Claude desktop app (`cd`)
- * is on screen in that app, not in this window: the desktop satellite draws
- * and counts it. Counting it here too would bill one display twice.
+ * Which editor this extension is running in, from vscode.env.appName. The
+ * product names were read from the installed builds on 08.10: "Visual Studio
+ * Code", "Cursor" (3.23), and "Devin" (1.126, which is what Windsurf became).
  */
-function countsInEditor(mark) {
-  return !!mark && mark.ag !== 'cd';
+function hostOf(appName) {
+  const n = String(appName ?? '').toLowerCase();
+  if (n.includes('cursor')) return 'cursor';
+  if (n.includes('devin') || n.includes('windsurf')) return 'devin';
+  return 'vscode';
+}
+
+/**
+ * Marks an editor window may count.
+ *
+ * A session in the Claude app (`cd`) or the Codex app (`xd`) is on screen in
+ * that app, not in this window: the desktop strip draws and counts it, and
+ * counting it here too would bill one display twice. An editor's own agent —
+ * Cursor's, Devin's — is on screen only in that editor, so a VS Code window
+ * open beside Cursor does not count Cursor's work. Claude Code, Codex and
+ * OpenCode run inside any of these editors, so any of them may count those.
+ */
+function countsInEditor(mark, host = 'vscode') {
+  if (!mark || typeof mark !== 'object') return false;
+  if (mark.ag === 'cd' || mark.ag === 'xd') return false;
+  if (mark.ag === 'cu') return host === 'cursor';
+  if (mark.ag === 'dv') return host === 'devin';
+  return true;
 }
 
 function agentName(tag) {
@@ -571,6 +595,35 @@ function hookEntry(command) {
   return { hooks: [{ type: 'command', command, timeout: 5 }] };
 }
 
+/**
+ * The heartbeat: PostToolUse, in the background. Without it a turn longer than
+ * max_turn_ms looked dead and lost its line mid-work. `async: true` is Claude
+ * Code's own option — "hook runs in background without blocking", read from
+ * the 2.1.294 binary on 08.10 — so a tool call never waits for us. Claude Code
+ * only: Codex has the event but no background mode, and a hook it waits for on
+ * every tool call is the latency we refused to add.
+ */
+const HEARTBEAT_EVENT = 'PostToolUse';
+function heartbeatEntry(command) {
+  return { hooks: [{ type: 'command', command, timeout: 5, async: true }] };
+}
+
+function heartbeatInstalled(settings, command) {
+  const hooks = settings && typeof settings === 'object' ? settings.hooks : null;
+  return !!hooks && typeof hooks === 'object' && hasCommand(hooks[HEARTBEAT_EVENT], command);
+}
+
+/** Adds only the heartbeat, for a settings file whose three hooks are already ours. */
+function addHeartbeat(settings, command) {
+  const next = { ...(settings && typeof settings === 'object' ? settings : {}) };
+  const hooks = { ...(next.hooks && typeof next.hooks === 'object' ? next.hooks : {}) };
+  const groups = Array.isArray(hooks[HEARTBEAT_EVENT]) ? hooks[HEARTBEAT_EVENT] : [];
+  if (hasCommand(groups, command)) return { settings: next, changed: false };
+  hooks[HEARTBEAT_EVENT] = [...groups, heartbeatEntry(command)];
+  next.hooks = hooks;
+  return { settings: next, changed: true };
+}
+
 function hasCommand(groups, command) {
   return Array.isArray(groups) && groups.some(
     (g) => g && Array.isArray(g.hooks) && g.hooks.some((h) => h && h.command === command),
@@ -652,6 +705,10 @@ function removeHooks(settings, command) {
  */
 const CODEX_BEGIN = '# >>> TICK activity hook — added by the TICK editor extension';
 const CODEX_END = '# <<< TICK activity hook';
+// What both writers' opening lines start with: the terminal installer adds the
+// same block for the Codex app, signed as itself, and either side has to
+// recognise the other's.
+const CODEX_MARK = '# >>> TICK activity hook';
 
 function codexHooksBlock(command, events = HOOK_EVENTS) {
   const body = events.map((event) => [
@@ -679,7 +736,7 @@ function codexHooksBlock(command, events = HOOK_EVENTS) {
 
 function codexHooksInstalled(text, command) {
   const s = typeof text === 'string' ? text : '';
-  return s.includes(CODEX_BEGIN) && s.includes(JSON.stringify(command));
+  return s.includes(CODEX_MARK) && s.includes(JSON.stringify(command));
 }
 
 function addCodexHooks(text, command, events = HOOK_EVENTS) {
@@ -697,7 +754,7 @@ function addCodexHooks(text, command, events = HOOK_EVENTS) {
  *  for byte as it was found. */
 function removeCodexHooks(text) {
   const s = typeof text === 'string' ? text : '';
-  const start = s.indexOf(CODEX_BEGIN);
+  const start = s.indexOf(CODEX_MARK);
   if (start === -1) return { text: s, changed: false };
   const endMark = s.indexOf(CODEX_END, start);
   if (endMark === -1) return { text: s, changed: false };
@@ -710,6 +767,53 @@ function removeCodexHooks(text) {
   before = before.replace(/\n+$/, before.length > 0 ? '\n' : '');
   after = after.replace(/^\n+/, '');
   return { text: `${before}${after}`, changed: true };
+}
+
+// ------------------------------------------------------ hooks, Cursor side
+
+/**
+ * Cursor's own agent reports through ~/.cursor/hooks.json, its own format:
+ * { version: 1, hooks: { <event>: [{ command, timeout? }] } }, camelCase event
+ * names. Read from cursor.com/docs/agent/hooks on 08.10 and from Cursor 3.23.
+ * The same additive rules as everywhere: our entry next to anyone else's,
+ * never reading, reordering or removing theirs.
+ */
+const CURSOR_EVENTS = ['beforeSubmitPrompt', 'stop', 'sessionEnd'];
+
+function cursorHooksInstalled(file, command, events = CURSOR_EVENTS) {
+  const hooks = file && typeof file === 'object' ? file.hooks : null;
+  if (!hooks || typeof hooks !== 'object') return false;
+  return events.every((e) => Array.isArray(hooks[e]) && hooks[e].some((h) => h && h.command === command));
+}
+
+function addCursorHooks(file, command, events = CURSOR_EVENTS) {
+  const next = { ...(file && typeof file === 'object' && !Array.isArray(file) ? file : {}) };
+  if (typeof next.version !== 'number') next.version = 1;
+  const hooks = { ...(next.hooks && typeof next.hooks === 'object' ? next.hooks : {}) };
+  let changed = false;
+  for (const e of events) {
+    const list = Array.isArray(hooks[e]) ? hooks[e] : [];
+    if (list.some((h) => h && h.command === command)) continue;
+    hooks[e] = [...list, { command, timeout: 5 }];
+    changed = true;
+  }
+  next.hooks = hooks;
+  return { file: next, changed };
+}
+
+function removeCursorHooks(file, command) {
+  const next = { ...(file && typeof file === 'object' && !Array.isArray(file) ? file : {}) };
+  if (!next.hooks || typeof next.hooks !== 'object') return { file: next, changed: false };
+  const hooks = {};
+  let changed = false;
+  for (const [e, list] of Object.entries(next.hooks)) {
+    if (!Array.isArray(list)) { hooks[e] = list; continue; }
+    const kept = list.filter((h) => !(h && h.command === command));
+    if (kept.length !== list.length) changed = true;
+    if (kept.length > 0) hooks[e] = kept;
+  }
+  next.hooks = hooks;
+  return { file: next, changed };
 }
 
 function hooksInstalled(settings, command, events = HOOK_EVENTS) {
@@ -727,7 +831,12 @@ module.exports = {
   offerIsFresh,
   setupView,
   AGENTS,
+  hostOf,
   countsInEditor,
+  CURSOR_EVENTS,
+  cursorHooksInstalled,
+  addCursorHooks,
+  removeCursorHooks,
   agentName,
   escapeMarkdown,
   tooltip,
@@ -755,4 +864,7 @@ module.exports = {
   addHooks,
   removeHooks,
   hooksInstalled,
+  HEARTBEAT_EVENT,
+  heartbeatInstalled,
+  addHeartbeat,
 };

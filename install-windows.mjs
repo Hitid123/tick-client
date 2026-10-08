@@ -71,23 +71,31 @@ function stopDaemon() {
   if (Number.isInteger(pid) && pid > 0) quiet('taskkill', ['/PID', String(pid), '/F']);
 }
 
+// PostToolUse is the heartbeat: every tool call renews a long turn, run in the
+// background (async) so the agent never waits for it. See hook.mjs.
+const HEARTBEAT = 'PostToolUse';
+const ours = (groups) => Array.isArray(groups) && groups.some((g) => g?.hooks?.some((h) => h?.command === HOOK_CMD));
+
+/** Returns what was added: the three turn hooks (then all four are ours), only
+ *  the heartbeat (the editor extension owns the three), or nothing. */
 function addHooks(settings) {
   settings.hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
+  const basePresent = EVENTS.every((ev) => ours(settings.hooks[ev]));
   let added = false;
-  for (const ev of EVENTS) {
+  for (const ev of [...EVENTS, HEARTBEAT]) {
     const groups = Array.isArray(settings.hooks[ev]) ? settings.hooks[ev] : [];
-    if (!groups.some((g) => g?.hooks?.some((h) => h?.command === HOOK_CMD))) {
-      groups.push({ hooks: [{ type: 'command', command: HOOK_CMD, timeout: 5 }] });
+    if (!ours(groups)) {
+      groups.push({ hooks: [{ type: 'command', command: HOOK_CMD, timeout: 5, ...(ev === HEARTBEAT ? { async: true } : {}) }] });
       added = true;
     }
     settings.hooks[ev] = groups;
   }
-  return added;
+  return !added ? 'none' : basePresent ? 'heartbeat' : 'all';
 }
 
-function removeHooks(settings) {
+function removeHooks(settings, events = [...EVENTS, HEARTBEAT]) {
   if (!settings?.hooks || typeof settings.hooks !== 'object') return;
-  for (const ev of EVENTS) {
+  for (const ev of events) {
     if (!Array.isArray(settings.hooks[ev])) continue;
     settings.hooks[ev] = settings.hooks[ev]
       .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => h?.command !== HOOK_CMD) } : g))
@@ -155,7 +163,8 @@ async function install() {
     had_file: prev ? prev.had_file : hadFile,
     wrote_hash: sha256(readFileSync(SETTINGS)),
     // Already there means the editor extension put it there, and it stays its own.
-    hook: added || prev?.hook ? HOOK_CMD : null,
+    hook: added === 'all' || prev?.hook ? HOOK_CMD : null,
+    heartbeat: added === 'heartbeat' || prev?.heartbeat ? HOOK_CMD : null,
   }, null, 2)}\n`);
 
   if (SYSTEM) {
@@ -189,10 +198,10 @@ function uninstall() {
       // did not exist before.
       if (m.had_file) copyFileSync(m.backup, SETTINGS); else rmSync(SETTINGS, { force: true });
       say('restored settings.json byte for byte');
-    } else if (m.hook) {
+    } else if (m.hook || m.heartbeat) {
       const settings = readJson(SETTINGS, null);
       if (settings) {
-        removeHooks(settings);
+        removeHooks(settings, m.hook ? undefined : [HEARTBEAT]);
         writeFileSync(SETTINGS, `${JSON.stringify(settings, null, 2)}\n`);
         say('settings.json changed since install; removed only our hook entries');
       }

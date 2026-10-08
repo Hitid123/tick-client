@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copies the two runtime files the extension ships into vendor/.
+# Copies the runtime files the extension ships into vendor/.
 #
 # The extension carries the daemon and the hook rather than linking to them,
 # because on a machine that never ran install.sh — a Windows machine, in
@@ -11,7 +11,7 @@ set -eu
 
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mkdir -p "$SRC/vendor"
-for f in daemon.mjs hook.mjs; do
+for f in daemon.mjs hook.mjs opencode-plugin.js; do
   cp "$SRC/../$f" "$SRC/vendor/$f"
 done
-printf 'vendor: daemon.mjs and hook.mjs copied from client/\n'
+printf 'vendor: daemon.mjs, hook.mjs and opencode-plugin.js copied from client/\n'

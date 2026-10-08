@@ -21,7 +21,7 @@ set -eu
 REPO="${TICK_REPO:-Hitid123/tick-client}"
 REF="${TICK_REF:-main}"
 BASE="${TICK_BASE:-https://raw.githubusercontent.com/$REPO/$REF}"
-FILES="statusline.sh nojq.sh daemon.mjs hook.mjs install.sh uninstall.sh"
+FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js install.sh uninstall.sh"
 # The desktop satellite is a Mac program; nobody else needs to download it.
 [ "$(uname -s)" = Darwin ] && FILES="$FILES tick-satellite-macos TICK.icns"
 

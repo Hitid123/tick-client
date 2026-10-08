@@ -3,6 +3,8 @@
 // The Claude desktop app runs our hook but has no status line to draw into, so
 // the satellite draws its own: a borderless strip laid over the empty row at
 // the bottom of Claude's message box, shown while a desktop session is working.
+// Since 08.10 the same for the Codex app, which runs the Codex hook from the
+// same config.toml as the Codex CLI (see HOSTS below).
 // The owner chose that placement on 07.10 knowing the two costs, written down
 // in vault/Решения.md: it can be mistaken for Claude's own interface, and its
 // position is inferred, not read.
@@ -35,7 +37,26 @@
 import AppKit
 import CoreGraphics
 
-let CLAUDE_BUNDLE = "com.anthropic.claudefordesktop"
+/// The apps the strip is drawn over. Each runs our hook through its own agent
+/// and tags the note with its own name: Claude Code inside the Claude app says
+/// `cd`, Codex inside the Codex app says `xd` (hook.mjs tells them apart by the
+/// bundle id every app hands to what it starts — checked on the running Codex
+/// app-server on 08.10). A session is drawn over the app it is running in and
+/// nowhere else, and only while that app is in front.
+///
+/// dy is where the strip sits, measured up from the bottom of the window to its
+/// midline: the empty row under Claude's message box, and the same idea for
+/// Codex until a screenshot says otherwise. It is the app's, not the person's.
+struct Host {
+  let bundle: String; let tag: String; let name: String; let dy: CGFloat; let placement: String
+}
+let HOSTS = [
+  Host(bundle: "com.anthropic.claudefordesktop", tag: "cd", name: "Claude", dy: 18.5,
+       placement: "state/desktop-placement.json"),
+  Host(bundle: "com.openai.codex", tag: "xd", name: "Codex", dy: 18.5,
+       placement: "state/desktop-placement-codex.json"),
+]
+let CLAUDE = HOSTS[0]
 let ENV = ProcessInfo.processInfo.environment
 let HOME = ENV["TICK_HOME"] ?? (NSHomeDirectory() as NSString).appendingPathComponent(".tick")
 func inHome(_ p: String) -> String { (HOME as NSString).appendingPathComponent(p) }
@@ -81,26 +102,29 @@ func nowMs() -> Double { (Date().timeIntervalSince1970 * 1000).rounded() }
 /// counted. Moving it somewhere nobody looks earns nothing.
 struct Settings { var enabled = true; var dx: CGFloat = 0; var dy: CGFloat = 18.5 }
 
-let PLACEMENT = inHome("state/desktop-placement.json")
-
-func settings() -> Settings {
-  var s = Settings()
+/// config.json "desktop": {"enabled", "dx", "dy"} is Claude's, as it always
+/// was; "desktop": {"codex": {"dx", "dy"}} is Codex's. The dragged offset in
+/// the host's own placement file wins over both.
+func settings(_ host: Host) -> Settings {
+  var s = Settings(dy: host.dy)
   if let d = readJSON(CONFIG)?["desktop"] as? [String: Any] {
     if let v = d["enabled"] as? Bool { s.enabled = v }
-    if let v = d["dx"] as? Double { s.dx = CGFloat(v) }
+    let own = host.tag == CLAUDE.tag ? d : (d[host.name.lowercased()] as? [String: Any] ?? [:])
+    if let v = own["dx"] as? Double { s.dx = CGFloat(v) }
     // Within the row and nowhere else, whatever is typed into the file.
-    if let v = d["dy"] as? Double { s.dy = min(max(CGFloat(v), 12), 32) }
+    if let v = own["dy"] as? Double { s.dy = min(max(CGFloat(v), 12), 32) }
   }
-  if let v = readJSON(PLACEMENT)?["dx"] as? Double { s.dx = CGFloat(v) }
+  if let v = readJSON(inHome(host.placement))?["dx"] as? Double { s.dx = CGFloat(v) }
   return s
 }
 
-func savePlacement(dx: CGFloat) {
+func savePlacement(_ host: Host, dx: CGFloat) {
+  let path = inHome(host.placement)
   guard let data = try? JSONSerialization.data(withJSONObject: ["dx": Double(dx.rounded())]) else { return }
-  let tmp = PLACEMENT + ".tmp"
+  let tmp = path + ".tmp"
   if FileManager.default.createFile(atPath: tmp, contents: data) {
-    _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: PLACEMENT), withItemAt: URL(fileURLWithPath: tmp))
-    if !FileManager.default.fileExists(atPath: PLACEMENT) { try? FileManager.default.moveItem(atPath: tmp, toPath: PLACEMENT) }
+    _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path), withItemAt: URL(fileURLWithPath: tmp))
+    if !FileManager.default.fileExists(atPath: path) { try? FileManager.default.moveItem(atPath: tmp, toPath: path) }
   }
 }
 
@@ -110,7 +134,7 @@ struct Session { let id: String; let ts: Double; let working: Bool; let lingerin
 
 /// Desktop sessions only: a terminal or editor session has its own line, and
 /// counting it here as well would bill one display twice.
-func desktopSessions() -> [Session] {
+func desktopSessions(_ host: Host) -> [Session] {
   let names = (try? FileManager.default.contentsOfDirectory(atPath: ACTIVITY)) ?? []
   let now = nowMs()
   var out: [Session] = []
@@ -118,7 +142,7 @@ func desktopSessions() -> [Session] {
     let id = String(name.dropLast(5))
     guard id.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
           let m = readJSON((ACTIVITY as NSString).appendingPathComponent(name)),
-          (m["ag"] as? String) == "cd",
+          (m["ag"] as? String) == host.tag,
           let ts = m["ts"] as? Double, let ev = m["ev"] as? String else { continue }
     let working = ev == "UserPromptSubmit" && now - ts <= MAX_TURN_MS
     let lingering = ev == "Stop" && now - ts <= LINGER_MS
@@ -147,10 +171,10 @@ func currentCreative() -> Creative? {
                   shownAt: c["shown_at"] as? Double ?? 0, clickUrl: safeURL(c["click_url"]))
 }
 
-/// Claude's main window in Cocoa coordinates, if it is on screen. Matched by
+/// The host's main window in Cocoa coordinates, if it is on screen. Matched by
 /// process, not by title: the title is exactly what we are not allowed to read.
-func claudeWindow() -> NSRect? {
-  guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: CLAUDE_BUNDLE).first else { return nil }
+func hostWindow(_ host: Host) -> NSRect? {
+  guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: host.bundle).first else { return nil }
   let pid = Int(app.processIdentifier)
   let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
   var best: CGRect? = nil
@@ -241,7 +265,12 @@ let CLAUDE_CONFIG = (NSHomeDirectory() as NSString).appendingPathComponent("Libr
 var themeReadAt: Double = 0
 var claudeTheme = "system"
 
-func darkTheme() -> Bool {
+func darkTheme(_ host: Host) -> Bool {
+  // Codex keeps its theme inside its own browser storage, out of reach without
+  // reading it; it follows macOS unless told otherwise, and so do we there.
+  guard host.tag == CLAUDE.tag else {
+    return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+  }
   let now = nowMs()
   if now - themeReadAt > 2000 {
     themeReadAt = now
@@ -451,7 +480,7 @@ final class Strip {
   }
 
   func show(_ c: Creative, over win: NSRect, at p: Settings) {
-    let isDark = darkTheme()
+    let isDark = darkTheme(activeHost)
     let appearing = !panel.isVisible
     if c != creative || appearing {
       creative = c
@@ -496,6 +525,31 @@ final class Strip {
   }
 }
 
+// -------------------------------------------------------------------- the log
+
+/// Why the strip is or is not on screen, one line per change, in
+/// state/satellite.log. "It does not show" has five honest answers — no
+/// desktop session is working, Claude is not in front, nothing is sold, the
+/// window was not found, or it is showing — and from the outside they all look
+/// the same. The Windows satellite has kept this log since 07.10.
+let LOG = inHome("state/satellite.log")
+var lastNote = ""
+
+func note(_ what: String) {
+  guard what != lastNote else { return }
+  lastNote = what
+  let fm = FileManager.default
+  if let size = (try? fm.attributesOfItem(atPath: LOG))?[.size] as? Int, size > 256 * 1024 {
+    fm.createFile(atPath: LOG, contents: Data())
+  }
+  if !fm.fileExists(atPath: LOG) { fm.createFile(atPath: LOG, contents: Data()) }
+  guard let h = FileHandle(forWritingAtPath: LOG) else { return }
+  defer { try? h.close() }
+  h.seekToEndOfFile()
+  let stamp = ISO8601DateFormatter().string(from: Date())
+  h.write(Data("\(stamp) \(what)\n".utf8))
+}
+
 // ------------------------------------------------------------------- the loop
 
 let app = NSApplication.shared
@@ -508,11 +562,11 @@ var dragBase: CGFloat? = nil
 var dragDX: CGFloat? = nil
 
 strip.view.onDrag = { moved in
-  if dragBase == nil { dragBase = settings().dx }
+  if dragBase == nil { dragBase = settings(activeHost).dx }
   dragDX = dragBase! + moved
 }
 strip.view.onDrop = {
-  if dragDX != nil { savePlacement(dx: strip.effectiveDX) }
+  if dragDX != nil { savePlacement(activeHost, dx: strip.effectiveDX) }
   dragBase = nil
   dragDX = nil
 }
@@ -524,9 +578,14 @@ var settledAt: Double = 0
 /// once it stops, instead of trailing behind it in jumps.
 let SETTLE_MS: Double = 220
 
-func claudeInFront() -> Bool {
-  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == CLAUDE_BUNDLE
+/// The host in front, if one of ours is.
+func frontHost() -> Host? {
+  let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+  return HOSTS.first { $0.bundle == front }
 }
+/// The host the strip is on, or was last on. Read by the drag handlers and the
+/// theme, which have no other way to know.
+var activeHost = CLAUDE
 
 func offscreen() {
   strip.hide()
@@ -540,17 +599,25 @@ func offscreen() {
 // strip leaves with Claude instead of on the next poll.
 NSWorkspace.shared.notificationCenter.addObserver(
   forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-) { _ in if !claudeInFront() { offscreen() } }
+) { _ in if frontHost()?.tag != activeHost.tag { offscreen() } }
 
 let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
-  let cfg = settings()
-  let sessions = cfg.enabled ? desktopSessions() : []
-  guard !sessions.isEmpty else { offscreen(); return }
+  // Only over an app of ours that is in front: an ad floating over some other
+  // app would be showing to nobody we can count, and in the way of everything.
+  guard let host = frontHost() else {
+    let busy = HOSTS.contains { !desktopSessions($0).isEmpty }
+    note(busy ? "hidden: neither Claude nor Codex is the app in front" : "waiting: no session in the Claude or Codex app is working")
+    offscreen(); return
+  }
+  let cfg = settings(host)
+  guard cfg.enabled else { note("off: \"desktop\": {\"enabled\": false} in config.json"); offscreen(); return }
+  let sessions = desktopSessions(host)
+  guard !sessions.isEmpty else { note("waiting: no session in the \(host.name) app is working"); offscreen(); return }
   ensureDaemon()
+  if host.tag != activeHost.tag { offscreen(); activeHost = host }
 
-  // Only while Claude itself is in front: an ad floating over some other app
-  // would be showing to nobody we can count, and in the way of everything.
-  guard claudeInFront(), let creative = currentCreative(), let win = claudeWindow() else { offscreen(); return }
+  guard let creative = currentCreative() else { note("hidden: no live creative (nothing sold right now, or the daemon is not running)"); offscreen(); return }
+  guard let win = hostWindow(host) else { note("hidden: the \(host.name) window was not found on screen"); offscreen(); return }
 
   let now = nowMs()
   if win != lastFrame {
@@ -566,7 +633,12 @@ let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
 
   if now - lastTick < TICK_MS { return }
   lastTick = now
-  guard strip.fullyVisible(in: win), dragDX == nil, let cid = creative.id else { return }
+  guard strip.onScreen else { return }  // still fading in: neither shown nor hidden yet
+  guard strip.fullyVisible(in: win), dragDX == nil, let cid = creative.id else {
+    note("shown over \(host.name), not counted: the strip is not fully inside the window, or is being dragged")
+    return
+  }
+  note("shown over \(host.name) and counted: \(creative.id ?? "?")")
   // One strip on one screen is one display, however many desktop sessions are
   // busy behind it. Count it once: a working session before one that just
   // finished, then the one that moved last. The editor solves the same problem

@@ -4,10 +4,13 @@ One short sponsored line in your editor's status bar. **70% of the gross goes to
 you**, paid in crypto from $5. Nothing is patched, nothing is read, and you can
 turn it off in one command.
 
-Works with **Claude Code and Codex**. Tested live in VS Code; it uses only the
-standard extension API, so Cursor, Windsurf, Kiro and VSCodium should behave the
-same, but we have not watched it run there yet. On Windows this extension *is*
-the client: the editor provides the runtime, so no shell script is needed.
+Works with **Claude Code and Codex**, tested live in VS Code. Also built for
+**Cursor's own agent, Devin (formerly Windsurf) and OpenCode**: in Cursor and
+Devin the extension registers with that editor's own hooks, and OpenCode gets a
+small plugin that reports its turns. Those are being tested now; the line shows
+in the status bar of whichever of these editors you use. On Windows this
+extension *is* the client: the editor provides the runtime, so no shell script
+is needed.
 
 Codex cannot show our line in its own terminal status line — that one is
 assembled from built-in elements and takes no external command. In the editor it
@@ -18,10 +21,12 @@ its model is running.
 
 - Draws one line in the status bar using `createStatusBarItem`, the editor's own
   public API.
-- Learns when your agent is working from **three hooks** — `UserPromptSubmit`,
-  `Stop`, `SessionEnd` — registered in `~/.claude/settings.json` for Claude Code
-  and `~/.codex/config.toml` for Codex, after asking you first, and backing both
-  files up before touching them.
+- Learns when your agent is working from **three hooks** — prompt submitted,
+  turn ended, session ended — registered in `~/.claude/settings.json` for Claude
+  Code, `~/.codex/config.toml` for Codex, `~/.cursor/hooks.json` for Cursor's
+  agent, Devin's `config.json` for Devin, and a plugin file in
+  `~/.config/opencode/plugins/` for OpenCode — after asking you first, and backing
+  every file up before touching it.
 - Counts an impression as five seconds of display while the model is actually
   working. Same rule as the terminal client.
 - Makes the advertiser's link clickable in two places: the line itself, and a

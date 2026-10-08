@@ -5,8 +5,10 @@
 #
 # Outside ~/.tick it changes ~/.claude/settings.json, backed up byte-for-byte
 # first: the statusLine field, and on macOS three hook entries for the Claude
-# desktop app. On macOS it also adds one login item, the desktop satellite.
-# --no-desktop skips both macOS parts.
+# desktop app. On macOS it also adds one login item, the desktop satellite,
+# and, where Codex is installed, the same hook for the Codex app in
+# ~/.codex/config.toml. Where OpenCode is installed, its plugin folder gets one
+# file of ours. --no-desktop skips the macOS parts.
 
 set -eu
 
@@ -50,6 +52,8 @@ for f in statusline.sh nojq.sh daemon.mjs hook.mjs; do
   cp "$SRC/$f" "$TICK_HOME/$f"
 done
 chmod +x "$TICK_HOME/statusline.sh" "$TICK_HOME/daemon.mjs"
+# Optional, so an installer fetched by an older bootstrap still works.
+[ -f "$SRC/opencode-plugin.js" ] && cp "$SRC/opencode-plugin.js" "$TICK_HOME/opencode-plugin.js"
 
 # The Claude desktop app runs hooks but never a status line, so on a Mac the
 # satellite draws the line there and the hook is its only signal.
@@ -117,17 +121,75 @@ mv "$TMP" "$SETTINGS"
 # replacing them. The hook writes three fields and never opens the transcript.
 HOOK_CMD="node \"$TICK_HOME/hook.mjs\" cc"
 HOOK_ADDED=0
+HEARTBEAT_ADDED=0
 if [ "$DESKTOP" -eq 1 ]; then
   BEFORE=$(sha256 "$SETTINGS")
+  # Were the three turn hooks already there? Then the editor extension put them
+  # there and they stay its own; at most the heartbeat is ours.
+  BASE_PRESENT=0
+  jq -e --arg cmd "$HOOK_CMD" '(.hooks // {}) as $h | all("UserPromptSubmit", "Stop", "SessionEnd";
+      . as $ev | any(($h[$ev] // [])[]?; any(.hooks[]?; .command == $cmd)))' "$SETTINGS" >/dev/null 2>&1 \
+    && BASE_PRESENT=1
+  # Three turn boundaries, and PostToolUse as a heartbeat in the background
+  # (async), so a turn longer than ten minutes keeps its line. See hook.mjs.
   jq --arg cmd "$HOOK_CMD" '
-    reduce ("UserPromptSubmit", "Stop", "SessionEnd") as $ev (.;
+    reduce ("UserPromptSubmit", "Stop", "SessionEnd", "PostToolUse") as $ev (.;
       if any((.hooks[$ev] // [])[]?; any(.hooks[]?; .command == $cmd)) then .
-      else .hooks[$ev] = ((.hooks[$ev] // []) + [{hooks: [{type: "command", command: $cmd, timeout: 5}]}])
+      else .hooks[$ev] = ((.hooks[$ev] // []) + [{hooks: [({type: "command", command: $cmd, timeout: 5}
+                                                     + (if $ev == "PostToolUse" then {async: true} else {} end))]}])
       end)' "$SETTINGS" > "$TMP"
   mv "$TMP" "$SETTINGS"
   # Already there means the editor extension put it there, and it stays its own:
   # uninstalling the terminal client must not take the editor's hook with it.
-  [ "$(sha256 "$SETTINGS")" = "$BEFORE" ] || HOOK_ADDED=1
+  if [ "$(sha256 "$SETTINGS")" != "$BEFORE" ]; then
+    if [ "$BASE_PRESENT" -eq 1 ]; then HEARTBEAT_ADDED=1; else HOOK_ADDED=1; fi
+  fi
+fi
+
+# --- the same hook for the Codex app (macOS) -----------------------------------
+# The Codex app runs Codex's hooks from ~/.codex/config.toml, like the Codex CLI
+# and the editor; the satellite draws its line over the Codex window from them.
+# One marked block appended, nothing else in the file read or rewritten — the
+# block the editor extension writes, which either side recognises. Codex asks
+# to review a new hook once before it runs it; that is its trust check, not ours
+# to skip.
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+CODEX_CONFIG="$CODEX_DIR/config.toml"
+CODEX_ADDED=0
+if [ "$DESKTOP" -eq 1 ] && { [ -d "$CODEX_DIR" ] || [ -d /Applications/Codex.app ]; }; then
+  if ! grep -qF '# >>> TICK activity hook' "$CODEX_CONFIG" 2>/dev/null; then
+    mkdir -p "$CODEX_DIR"
+    [ -f "$CODEX_CONFIG" ] && cp "$CODEX_CONFIG" "$TICK_HOME/codex-config.backup.$STAMP.toml"
+    node - "$CODEX_CONFIG" "node \"$TICK_HOME/hook.mjs\" cx" <<'NODE'
+const fs = require('node:fs');
+const [file, command] = process.argv.slice(2);
+let text = '';
+try { text = fs.readFileSync(file, 'utf8'); } catch {}
+const body = ['UserPromptSubmit', 'Stop', 'SessionEnd'].map((e) => [
+  `[[hooks.${e}]]`, 'matcher = ""', `[[hooks.${e}.hooks]]`, 'type = "command"',
+  `command = ${JSON.stringify(command)}`, 'timeout = 3',
+].join('\n')).join('\n\n');
+const block = ['# >>> TICK activity hook — added by the TICK installer',
+  '# Remove it with ~/.tick/uninstall.sh. Codex will ask you to review this hook',
+  '# before it runs; that is its own trust check, and we do not get around it.',
+  body, '# <<< TICK activity hook'].join('\n');
+const base = text.length > 0 && !text.endsWith('\n') ? `${text}\n` : text;
+fs.writeFileSync(`${file}.tick.tmp`, `${base}${base.length > 0 ? '\n' : ''}${block}\n`);
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+    CODEX_ADDED=1
+  fi
+fi
+
+# --- OpenCode ----------------------------------------------------------------
+# No command hooks there; a plugin file of ours in its plugins folder writes the
+# same three-field note. Only where OpenCode has been run.
+OPENCODE_PLUGIN="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/tick.js"
+OPENCODE_ADDED=0
+if [ -d "$(dirname "$(dirname "$OPENCODE_PLUGIN")")" ] && [ -f "$TICK_HOME/opencode-plugin.js" ]; then
+  mkdir -p "$(dirname "$OPENCODE_PLUGIN")"
+  cmp -s "$TICK_HOME/opencode-plugin.js" "$OPENCODE_PLUGIN" 2>/dev/null || cp "$TICK_HOME/opencode-plugin.js" "$OPENCODE_PLUGIN"
+  OPENCODE_ADDED=1
 fi
 
 # A second install must not forget the first. The manifest's backup is what
@@ -142,13 +204,20 @@ if [ -f "$MANIFEST" ] && PREV_BACKUP=$(jq -r '.backup // empty' "$MANIFEST" 2>/d
   [ "$(jq -r '.had_field' "$MANIFEST")" = true ] && HAD_FIELD=1 || HAD_FIELD=0
   PREV_HOOK=$(jq -r '.hook // empty' "$MANIFEST")
   [ -n "$PREV_HOOK" ] && HOOK_ADDED=1
+  [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && CODEX_ADDED=1
+  [ -n "$(jq -r '.heartbeat // empty' "$MANIFEST")" ] && [ "$HOOK_ADDED" -eq 0 ] && HEARTBEAT_ADDED=1
 fi
 
 jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --argjson had_file "$HAD_FILE" --argjson had_field "$HAD_FIELD" \
       --arg settings "$SETTINGS" --arg hook "$HOOK_CMD" --argjson hook_added "$HOOK_ADDED" \
+      --arg codex "$CODEX_CONFIG" --argjson codex_added "$CODEX_ADDED" --argjson heartbeat_added "$HEARTBEAT_ADDED" \
+      --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
   '{backup: $backup, settings: $settings, wrote_hash: $hash, had_file: ($had_file == 1), had_field: ($had_field == 1),
-    hook: (if $hook_added == 1 then $hook else null end)}' \
+    hook: (if $hook_added == 1 then $hook else null end),
+    heartbeat: (if $heartbeat_added == 1 then $hook else null end),
+    codex_config: $codex, codex_added: ($codex_added == 1),
+    opencode_plugin: (if $opencode_added == 1 then $opencode else null end)}' \
   > "$TICK_HOME/install.manifest.json"
 
 # --- desktop satellite (macOS) -----------------------------------------------
