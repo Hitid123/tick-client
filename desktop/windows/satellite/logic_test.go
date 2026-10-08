@@ -210,3 +210,25 @@ func TestEachHostKeepsItsOwnPlace(t *testing.T) {
 		t.Fatal("a drag over Cursor must not move the strip over Claude")
 	}
 }
+
+func TestCodexOnWindowsTakesItsCliTaggedTurns(t *testing.T) {
+	dir := t.TempDir()
+	now := 1_000_000_000.0
+	write(t, filepath.Join(dir, "app.json"), map[string]any{"ts": now - 1000, "ev": "UserPromptSubmit", "ag": "cx"})
+	write(t, filepath.Join(dir, "claude.json"), map[string]any{"ts": now - 1000, "ev": "UserPromptSubmit", "ag": "cd"})
+	codex := *hostByExe("codex.exe")
+	got := desktopSessions(dir, now, append([]string{codex.Tag}, codex.Also...)...)
+	if len(got) != 1 || got[0].ID != "app" {
+		t.Fatalf("the Codex window takes the cx turn and nothing else, got %+v", got)
+	}
+}
+
+func TestASessionAnEditorCountsIsNotCountedTwice(t *testing.T) {
+	p := pathsFrom(t.TempDir())
+	now := 1_000_000_000.0
+	write(t, filepath.Join(p.State, "claims", "s1.json"), map[string]any{"owner": "vscode", "hb": now - 3000})
+	write(t, filepath.Join(p.State, "claims", "s2.json"), map[string]any{"owner": "vscode", "hb": now - 60000})
+	if !claimedElsewhere(p, "s1", now) || claimedElsewhere(p, "s2", now) || claimedElsewhere(p, "s3", now) {
+		t.Fatal("a fresh claim counts as elsewhere; a stale or missing one does not")
+	}
+}

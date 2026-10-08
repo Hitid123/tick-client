@@ -16,7 +16,7 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string> } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01 } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, env)
   const runs: any[] = []
@@ -25,6 +25,9 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfa
   on('command.register', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'abc' }))
   on('session.surfaces', () => ({ value: surfaces }))
+  // The session's cost, as /cost totals it: rising while the model answers.
+  let usd = 0
+  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [], cost: { usd: (usd += costStep) } } }))
   on('settings.read', () => ({ value: statusLine ? { statusLine: { type: 'command', command: statusLine } } : {} }))
   on('fs.read', ($, e) => (line && e.path.endsWith('/.tick/state/current.json') ? { value: JSON.stringify(line) } : { deny: 'no such file' }))
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
@@ -144,6 +147,19 @@ test('on Windows the home is USERPROFILE, not the HOME Git Bash spells /c/Users/
   expect(launch.argv[3]).toBe('C:/Users/dev/.tick')
   // A daemon started from the Claude app opens no console window.
   expect(launch.argv[2]).toContain('windowsHide:true')
+})
+
+test('a turn whose model never answers is shown but not paid for', async ($, on) => {
+  // "API error · Retrying": the turn runs, the cost does not move.
+  const { clock, ticks } = machine(on, { costStep: 0 })
+  await start($, 'desktop')
+  await $.turn.start({ turnId: 't1', text: '' })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  for (let i = 0; i < 15; i++) await clock.advance(1000)
+  const all = ticks()
+  expect(all.length >= 4).toBe(true)
+  for (const t of all) expect(t.api_ms).toBe(0)
+  await ui.unmount()
 })
 
 test('with nothing sold the band is empty and nothing is counted', async ($, on) => {

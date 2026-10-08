@@ -45,6 +45,13 @@ const CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const CODEX_CONFIG = join(CODEX_DIR, 'config.toml');
 const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
 const OPENCODE_PLUGIN = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'plugins', 'tick.js');
+// Cursor's own hook file. Cursor on Windows did not run Claude Code's hooks
+// (the owner's report of 08.10 had no Cursor turn at all), so ours goes here,
+// in Cursor's format, beside anyone else's.
+const CURSOR_DIR = join(homedir(), '.cursor');
+const CURSOR_HOOKS = join(CURSOR_DIR, 'hooks.json');
+const CURSOR_CMD = `node "${join(HOME, 'hook.mjs')}" cu`;
+const CURSOR_EVENTS = ['beforeSubmitPrompt', 'stop', 'sessionEnd'];
 // A status line of ours from the version that set one (08.10, briefly): taken
 // back now that the plugin draws the line in the terminal.
 const isOurStatusLine = (sl) => String(sl?.command ?? '').includes('.tick') && String(sl?.command ?? '').includes('statusline.sh');
@@ -233,6 +240,30 @@ async function install() {
     codexAdded = true;
   }
 
+  // Cursor: three entries in its own hooks.json, where Cursor has been run.
+  let cursorAdded = prev?.cursor_added ?? false;
+  if (existsSync(CURSOR_DIR)) {
+    const had = existsSync(CURSOR_HOOKS);
+    const file = had ? readJson(CURSOR_HOOKS, null) : { version: 1, hooks: {} };
+    if (file && typeof file === 'object') {
+      file.version = file.version ?? 1;
+      file.hooks = file.hooks && typeof file.hooks === 'object' ? file.hooks : {};
+      let changed = !had;
+      for (const e of CURSOR_EVENTS) {
+        const list = Array.isArray(file.hooks[e]) ? file.hooks[e] : [];
+        if (!list.some((h) => h?.command === CURSOR_CMD)) { list.push({ command: CURSOR_CMD, timeout: 5 }); changed = true; }
+        file.hooks[e] = list;
+      }
+      if (changed) {
+        if (had) copyFileSync(CURSOR_HOOKS, join(HOME, 'cursor-hooks.backup.json'));
+        writeFileSync(CURSOR_HOOKS, `${JSON.stringify(file, null, 2)}\n`);
+        cursorAdded = true;
+      }
+    } else {
+      say('Cursor\'s hooks.json is not valid JSON; Cursor is left out');
+    }
+  }
+
   // OpenCode: one plugin file, where OpenCode has been run.
   let opencode = prev?.opencode_plugin ?? null;
   if (existsSync(join(OPENCODE_PLUGIN, '..', '..'))) {
@@ -249,6 +280,7 @@ async function install() {
     hook: added === 'all' || prev?.hook ? HOOK_CMD : null,
     heartbeat: added === 'heartbeat' || prev?.heartbeat ? HOOK_CMD : null,
     plugin_added: plugin,
+    cursor_added: cursorAdded,
     codex_added: codexAdded,
     opencode_plugin: opencode,
   }, null, 2)}\n`);
@@ -304,6 +336,19 @@ function uninstall() {
     say('removed the Claude Code plugin');
   }
   if (m?.codex_added) removeCodexBlock();
+  if (m?.cursor_added && existsSync(CURSOR_HOOKS)) {
+    const file = readJson(CURSOR_HOOKS, null);
+    if (file?.hooks && typeof file.hooks === 'object') {
+      for (const [e, list] of Object.entries(file.hooks)) {
+        if (!Array.isArray(list)) continue;
+        const kept = list.filter((h) => h?.command !== CURSOR_CMD);
+        if (kept.length > 0) file.hooks[e] = kept; else delete file.hooks[e];
+      }
+      const onlyOurs = Object.keys(file.hooks).length === 0 && Object.keys(file).every((k) => k === 'version' || k === 'hooks');
+      if (onlyOurs) rmSync(CURSOR_HOOKS, { force: true }); else writeFileSync(CURSOR_HOOKS, `${JSON.stringify(file, null, 2)}\n`);
+      say('removed our hook from Cursor');
+    }
+  }
   if (m?.opencode_plugin && existsSync(m.opencode_plugin)) {
     rmSync(m.opencode_plugin, { force: true });
     say('removed our OpenCode plugin');
@@ -338,6 +383,7 @@ function report() {
   say(`plugin drawing in the Claude app: ${beat ? `signalled ${ago(beat.ts)}` : 'never yet'}`);
   say(`Codex config: ${existsSync(CODEX_CONFIG) ? (readText(CODEX_CONFIG).includes('TICK activity hook') ? 'has our hook' : 'no hook of ours') : 'not found'}`);
   say(`OpenCode plugin: ${existsSync(OPENCODE_PLUGIN) ? 'yes' : 'no'}`);
+  say(`Cursor hooks: ${readText(CURSOR_HOOKS).includes('hook.mjs') ? 'has our hook' : existsSync(CURSOR_DIR) ? 'no hook of ours' : 'Cursor not found'}`);
   say('recent turns (agent, event, when):');
   const dir = join(HOME, 'state', 'activity');
   let marks = [];

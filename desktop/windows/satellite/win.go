@@ -716,7 +716,7 @@ func loop() {
 	s := loadSettings(paths, activeHost)
 	var sessions []Session
 	if s.Enabled {
-		sessions = desktopSessions(paths.Activity, nowMs(), activeHost.Tag)
+		sessions = desktopSessions(paths.Activity, nowMs(), append([]string{activeHost.Tag}, activeHost.Also...)...)
 	}
 	if len(sessions) == 0 {
 		offscreen()
@@ -790,6 +790,9 @@ func loop() {
 		return
 	}
 	pick := pickSession(sessions)
+	if claimedElsewhere(paths, pick.ID, now) {
+		return
+	}
 	for id := range counters {
 		if id != pick.ID {
 			delete(counters, id)

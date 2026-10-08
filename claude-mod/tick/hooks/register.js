@@ -189,6 +189,7 @@ async function pulse($) {
 let lastBeat = 0
 let wasVisible = false
 let inApp = false
+let lastUsd = null
 // Whether the terminal turns a link into a clickable word. Where it cannot,
 // Claude Code prints the address after the text — the owner's PowerShell
 // window on 08.10 showed the line followed by gettick.dev/c/… — so there the
@@ -226,7 +227,21 @@ async function count($) {
     counter = { api: 0, dur: 0, last: 0 }
   } else {
     const elapsed = counter.last > 0 ? Math.max(0, Math.min(now - counter.last, TICK_MS * 2)) : 0
-    const busy = working || renderWorking
+    // Model time grows only when the model really answered: the session's
+    // cost went up since the last tick. That is the terminal's own rule, where
+    // cost.total_api_duration_ms moves as each response lands, and it is the
+    // whole economic defence: the owner's PowerShell on 08.10 showed the line
+    // through "API error · Retrying", a turn running with no model behind it,
+    // which a turn-boundary rule would have paid for. Where the host keeps no
+    // cost ledger, the turn boundaries are all there is.
+    let busy = working || renderWorking
+    try {
+      const usd = (await $.session.usage()).cost?.usd
+      if (typeof usd === 'number') {
+        busy = lastUsd !== null && usd > lastUsd
+        lastUsd = usd
+      }
+    } catch { /* keep the turn rule */ }
     counter = { api: counter.api + (busy ? elapsed : 0), dur: counter.dur + elapsed, last: now }
     pending.push(JSON.stringify({
       ts: now, sid: `mod:${sid}`, cid: creative.id, api_ms: counter.api, dur_ms: counter.dur, model: null,

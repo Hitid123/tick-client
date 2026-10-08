@@ -45,6 +45,7 @@ type Paths struct {
 // Mac; the same app draws the same row on Windows.
 type Host struct {
 	Tag, Name   string
+	Also        []string // more tags whose sessions are drawn over this app
 	Exes        []string
 	DY          float64
 	Placement   string
@@ -53,7 +54,11 @@ type Host struct {
 
 var hosts = []Host{
 	{Tag: "cd", Name: "Claude", Exes: []string{"claude.exe"}, DY: 18.5, Placement: "desktop-placement.json"},
-	{Tag: "xd", Name: "Codex", Exes: []string{"codex.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
+	// Also "cx": on Windows the hook cannot tell the Codex app from the Codex
+	// CLI (no bundle id, and the app's engine did not hand its originator to
+	// the hook on the owner's machine, 08.10: his app turns came in as cx).
+	// While the Codex app is in front a working Codex session is its own.
+	{Tag: "xd", Name: "Codex", Also: []string{"cx"}, Exes: []string{"codex.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
 	{Tag: "cu", Name: "Cursor", Exes: []string{"cursor.exe"}, DY: 15.5, Placement: "desktop-placement-cursor.json", ConfigKey: "cursor"},
 	{Tag: "dv", Name: "Devin", Exes: []string{"devin.exe", "windsurf.exe"}, DY: 18.5, Placement: "desktop-placement-devin.json", ConfigKey: "devin"},
 }
@@ -129,7 +134,7 @@ var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // Desktop sessions only: a terminal or editor session has its own line, and
 // counting it here as well would bill one display twice.
-func desktopSessions(dir string, now float64, tag string) []Session {
+func desktopSessions(dir string, now float64, tags ...string) []Session {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -146,7 +151,12 @@ func desktopSessions(dir string, now float64, tag string) []Session {
 		}
 		m := readJSON(filepath.Join(dir, name))
 		ts, ok := num(m, "ts")
-		if m == nil || !ok || str(m, "ag") != tag {
+		ag := str(m, "ag")
+		known := false
+		for _, t := range tags {
+			known = known || ag == t
+		}
+		if m == nil || !ok || !known {
 			continue
 		}
 		ev := str(m, "ev")
@@ -400,4 +410,13 @@ func modDrawsInClaude(p Paths, claudeSettings string, now float64) bool {
 		return true
 	}
 	return false
+}
+
+// Whether an editor window counts this session right now: the VS Code
+// extension claims a session it counts (claims/<id>.json, heartbeat every
+// cycle). The strip still draws, and leaves the counting to it: one display
+// counted once.
+func claimedElsewhere(p Paths, sessionID string, now float64) bool {
+	hb, ok := num(readJSON(filepath.Join(p.State, "claims", sessionID+".json")), "hb")
+	return ok && now-hb < 15000
 }

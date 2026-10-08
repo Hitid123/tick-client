@@ -181,6 +181,28 @@ NODE
   fi
 fi
 
+# --- Cursor's own agent -------------------------------------------------------
+# Cursor runs hooks from ~/.cursor/hooks.json, its own format. On a Mac it also
+# picks up Claude Code's, but on Windows it did not (the owner's report of
+# 08.10 had no Cursor turn at all), so ours goes into Cursor's file as well:
+# three entries beside anyone else's, taken back exactly on uninstall.
+CURSOR_HOOKS="$HOME/.cursor/hooks.json"
+CURSOR_CMD="node \"$TICK_HOME/hook.mjs\" cu"
+CURSOR_ADDED=0
+if [ -d "$HOME/.cursor" ]; then
+  if [ ! -f "$CURSOR_HOOKS" ]; then printf '{"version":1,"hooks":{}}\n' > "$CURSOR_HOOKS"; fi
+  if jq -e . "$CURSOR_HOOKS" >/dev/null 2>&1; then
+    BEFORE_CURSOR=$(sha256 "$CURSOR_HOOKS")
+    jq --arg cmd "$CURSOR_CMD" '
+      .version = (.version // 1) | .hooks = (.hooks // {})
+      | reduce ("beforeSubmitPrompt", "stop", "sessionEnd") as $e (.;
+          if any((.hooks[$e] // [])[]?; .command == $cmd) then .
+          else .hooks[$e] = ((.hooks[$e] // []) + [{command: $cmd, timeout: 5}]) end)' "$CURSOR_HOOKS" > "$CURSOR_HOOKS.tick.tmp" \
+      && mv "$CURSOR_HOOKS.tick.tmp" "$CURSOR_HOOKS"
+    [ "$(sha256 "$CURSOR_HOOKS")" = "$BEFORE_CURSOR" ] || CURSOR_ADDED=1
+  fi
+fi
+
 # --- OpenCode ----------------------------------------------------------------
 # No command hooks there; a plugin file of ours in its plugins folder writes the
 # same three-field note. Only where OpenCode has been run.
@@ -205,6 +227,7 @@ if [ -f "$MANIFEST" ] && PREV_BACKUP=$(jq -r '.backup // empty' "$MANIFEST" 2>/d
   PREV_HOOK=$(jq -r '.hook // empty' "$MANIFEST")
   [ -n "$PREV_HOOK" ] && HOOK_ADDED=1
   [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && CODEX_ADDED=1
+  [ "$(jq -r '.cursor_added // false' "$MANIFEST")" = true ] && CURSOR_ADDED=1
   [ -n "$(jq -r '.heartbeat // empty' "$MANIFEST")" ] && [ "$HOOK_ADDED" -eq 0 ] && HEARTBEAT_ADDED=1
 fi
 
@@ -213,11 +236,13 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --arg settings "$SETTINGS" --arg hook "$HOOK_CMD" --argjson hook_added "$HOOK_ADDED" \
       --arg codex "$CODEX_CONFIG" --argjson codex_added "$CODEX_ADDED" --argjson heartbeat_added "$HEARTBEAT_ADDED" \
       --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
+      --arg cursor "$CURSOR_HOOKS" --arg cursor_cmd "$CURSOR_CMD" --argjson cursor_added "$CURSOR_ADDED" \
   '{backup: $backup, settings: $settings, wrote_hash: $hash, had_file: ($had_file == 1), had_field: ($had_field == 1),
     hook: (if $hook_added == 1 then $hook else null end),
     heartbeat: (if $heartbeat_added == 1 then $hook else null end),
     codex_config: $codex, codex_added: ($codex_added == 1),
-    opencode_plugin: (if $opencode_added == 1 then $opencode else null end)}' \
+    opencode_plugin: (if $opencode_added == 1 then $opencode else null end),
+    cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1)}' \
   > "$TICK_HOME/install.manifest.json"
 
 # --- desktop satellite (macOS) -----------------------------------------------

@@ -72,6 +72,17 @@ const next = `${before}${after}`;
 if (next.trim() === '') fs.unlinkSync(file); else fs.writeFileSync(file, next);
 NODE
   fi
+  CURSOR_HOOKS=$(jq -r '.cursor_hooks // empty' "$MANIFEST")
+  CURSOR_CMD=$(jq -r '.cursor_cmd // empty' "$MANIFEST")
+  if [ "$(jq -r '.cursor_added // false' "$MANIFEST")" = true ] && [ -f "$CURSOR_HOOKS" ] && [ -n "$CURSOR_CMD" ]; then
+    jq --arg cmd "$CURSOR_CMD" '
+      .hooks = ((.hooks // {}) | with_entries(.value |= (if type == "array" then map(select(.command != $cmd)) else . end))
+                | with_entries(select((.value | type) != "array" or (.value | length) > 0)))' "$CURSOR_HOOKS" > "$CURSOR_HOOKS.tick.tmp" \
+      && mv "$CURSOR_HOOKS.tick.tmp" "$CURSOR_HOOKS"
+    # A file that holds nothing but what we created goes too.
+    if jq -e '.hooks == {} and (keys - ["version", "hooks"]) == []' "$CURSOR_HOOKS" >/dev/null 2>&1; then rm -f "$CURSOR_HOOKS"; fi
+    say 'removed our hook from Cursor'
+  fi
   OPENCODE_PLUGIN=$(jq -r '.opencode_plugin // empty' "$MANIFEST")
   if [ -n "$OPENCODE_PLUGIN" ] && cmp -s "$OPENCODE_PLUGIN" "$TICK_HOME/opencode-plugin.js" 2>/dev/null; then
     rm -f "$OPENCODE_PLUGIN"
