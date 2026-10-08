@@ -128,7 +128,7 @@ func desktopSessions() -> [Session] {
 }
 
 struct Creative: Equatable {
-  let id: String?; let text: String; let promo: String?; let shownAt: Double; let clickUrl: URL?
+  let id: String?; let text: String; let promo: String?; let accent: String?; let shownAt: Double; let clickUrl: URL?
 }
 
 /// Only our own http(s) links, and never with a quote or a control character:
@@ -143,6 +143,7 @@ func currentCreative() -> Creative? {
   guard let c = readJSON(CURRENT), let text = c["text"] as? String, !text.isEmpty else { return nil }
   if let exp = c["expires_at"] as? Double, exp < nowMs() { return nil }
   return Creative(id: c["creative_id"] as? String, text: text, promo: c["promo_code"] as? String,
+                  accent: c["accent"] as? String,
                   shownAt: c["shown_at"] as? Double ?? 0, clickUrl: safeURL(c["click_url"]))
 }
 
@@ -258,22 +259,39 @@ func hex(_ v: UInt32, _ a: CGFloat = 1) -> NSColor {
           blue: CGFloat(v & 0xff) / 255, alpha: a)
 }
 
-/// The brand guide's tokens, both sides of it. Amber paints surfaces and the
-/// promo code on dark; on light the code takes --amber-ink, because amber on
-/// white is unreadable as a word. Solid surfaces: the guide rules out glass.
+/// The brand guide's tokens, both sides of it. Solid surfaces: the guide
+/// rules out glass.
 struct Palette {
-  let surface, border, quiet, bright, settled, promo: NSColor
+  let surface, border, quiet, bright, settled: NSColor
+  let onDark: Bool
   static let dark = Palette(surface: hex(0x191817), border: hex(0x332F2B), quiet: hex(0x8A8782),
-                            bright: hex(0xF0EEE9), settled: hex(0xA8A49E), promo: hex(0xFFB000))
+                            bright: hex(0xF0EEE9), settled: hex(0xA8A49E), onDark: true)
   static let light = Palette(surface: hex(0xFFFFFF), border: hex(0xD6D2CB), quiet: hex(0x8A8782),
-                             bright: hex(0x191817), settled: hex(0x5C5955), promo: hex(0x8F5600))
+                             bright: hex(0x191817), settled: hex(0x5C5955), onDark: false)
+
+  /// The advertiser's colour on this surface. Each name has a shade for the
+  /// dark strip and a deeper one for the light, because amber on white is
+  /// unreadable as a word; every pair clears 6:1 on its surface. The table is
+  /// server/lib/creative.ts; a name not in it is amber.
+  func accent(_ name: String?) -> NSColor {
+    let (d, l) = Palette.accents[name ?? ""] ?? Palette.accents["amber"]!
+    return hex(onDark ? d : l)
+  }
+  static let accents: [String: (UInt32, UInt32)] = [
+    "amber": (0xFFB000, 0x8F5600), "green": (0x3DD68C, 0x1A7044), "teal": (0x33D6C9, 0x0D6E66),
+    "blue": (0x62AEFF, 0x1F5FBF), "violet": (0xB794FF, 0x6A3FC2), "pink": (0xFF85BE, 0xA8235F),
+    "coral": (0xFF7466, 0xB42318),
+  ]
 }
 
 /// The advertiser's name: what comes before the colon in "Linear: issue
 /// tracking…", if there is a colon early enough to be one.
 func advertiserRange(_ text: NSString) -> NSRange? {
   let colon = text.range(of: ":")
-  guard colon.location != NSNotFound, colon.location > 0, colon.location <= 24 else { return nil }
+  guard colon.location != NSNotFound, colon.location > 0 else { return nil }
+  // Twenty-four characters, as everywhere else; counted as characters, not
+  // UTF-16 units, so an emoji in a name does not cost it two.
+  guard text.substring(to: colon.location).count <= 24 else { return nil }
   return NSRange(location: 0, length: colon.location)
 }
 
@@ -294,15 +312,18 @@ func styled(_ c: Creative, _ pal: Palette, fresh: Bool) -> NSAttributedString {
   let body = NSMutableAttributedString(string: c.text, attributes: [
     .font: NSFont.systemFont(ofSize: 12), .foregroundColor: fresh ? pal.bright : pal.settled,
   ])
-  if let name = advertiserRange(text) {
-    body.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: pal.promo], range: name)
+  let accent = pal.accent(c.accent)
+  let name = advertiserRange(text)
+  if let name {
+    body.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: accent], range: name)
   }
+  // The first occurrence after the name, as the terminal and the previews do.
+  // The server keeps a code to one occurrence, so this is the code itself.
   if let promo = c.promo, !promo.isEmpty {
-    var range = text.range(of: promo)
-    while range.location != NSNotFound {
-      body.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .bold), .foregroundColor: pal.promo], range: range)
-      let from = range.location + range.length
-      range = text.range(of: promo, options: [], range: NSRange(location: from, length: text.length - from))
+    let from = name.map { $0.location + $0.length } ?? 0
+    let range = text.range(of: promo, options: [], range: NSRange(location: from, length: text.length - from))
+    if range.location != NSNotFound {
+      body.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .bold), .foregroundColor: accent], range: range)
     }
   }
   s.append(body)

@@ -346,6 +346,7 @@ function rotateCurrent(queue, now) {
     // line validates it again before printing; a server is not a reason to trust.
     ...(typeof next.click_url === 'string' ? { click_url: next.click_url } : {}),
     ...(typeof next.promo_code === 'string' ? { promo_code: next.promo_code } : {}),
+    ...(typeof next.accent === 'string' ? { accent: next.accent } : {}),
   });
   return true;
 }
@@ -497,6 +498,10 @@ async function cycle(cfg, device, cycleNo) {
             ttl_sec: typeof c.ttl_sec === 'number' ? c.ttl_sec : 600,
             ...(typeof c.click_url === 'string' ? { click_url: c.click_url } : {}),
             ...(typeof c.promo_code === 'string' ? { promo_code: c.promo_code } : {}),
+            // The advertiser's colour, by name. Each client knows the names it
+            // can draw and falls back to amber on the rest, so only the shape
+            // is checked here.
+            ...(typeof c.accent === 'string' && /^[a-z]{1,16}$/.test(c.accent) ? { accent: c.accent } : {}),
           });
           gained += 1;
         }

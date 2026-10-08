@@ -39,13 +39,19 @@ esac
 
 # Three levels in one line, from the brand guide. The whole scheme in a sentence:
 # the marker is a disclosure and stays quiet, the offer arrives bright and settles
-# one step down after two seconds, and the promo code is the only coloured thing
-# on the line.
+# one step down after two seconds, and the advertiser's name and promo code carry
+# the one colour on the line.
 #
 #   marker            #5F5C57  ANSI 59   muted always
 #   offer, 0-2 s      #F0EEE9  ANSI 255  full brightness as the line changes
 #   offer, after      #A8A49E  ANSI 248  one step down, and then never again
-#   promo code        #FFB000  ANSI 214  bold, the single accent
+#   name, promo code  the advertiser's colour; amber, ANSI 214, unless they chose
+#                     another from server/lib/creative.ts. The code is bold.
+#
+# The guide had the promo code as the only coloured thing. The owner moved the
+# name into colour on the desktop strip on 07.10 and let advertisers pick the
+# colour on 08.10; the terminal follows, so one campaign looks the same
+# everywhere it runs.
 #
 # NO_COLOR is honoured as specified at no-color.org; TERM=dumb has no SGR at all.
 COLOR=1
@@ -57,13 +63,16 @@ else
   esac
 fi
 
-MARK_ON=''; TEXT_FRESH=''; TEXT_SETTLED=''; PROMO_ON=''; COLOR_OFF=''
+# One subshell for the escape character, then plain strings: each $(printf)
+# is a fork, and forks are most of what this script spends.
+MARK_ON=''; TEXT_FRESH=''; TEXT_SETTLED=''; COLOR_OFF=''; BOLD_OFF=''; ESC=''
 if [ "$COLOR" -eq 1 ]; then
-  MARK_ON=$(printf '\033[38;5;59m')
-  TEXT_FRESH=$(printf '\033[38;5;255m')
-  TEXT_SETTLED=$(printf '\033[38;5;248m')
-  PROMO_ON=$(printf '\033[1;38;5;214m')
-  COLOR_OFF=$(printf '\033[0m')
+  ESC=$(printf '\033')
+  MARK_ON="$ESC[38;5;59m"
+  TEXT_FRESH="$ESC[38;5;255m"
+  TEXT_SETTLED="$ESC[38;5;248m"
+  BOLD_OFF="$ESC[22m"
+  COLOR_OFF="$ESC[0m"
 fi
 
 # OSC 8 hyperlinks are officially supported in the status line. Terminals that do
@@ -100,6 +109,8 @@ DISPLAY=''
 CLICK_URL=''
 PROMO=''
 FRESH='0'
+NAME=''
+ACCENT=''
 TICKLINE=''
 
 if command -v jq >/dev/null 2>&1; then
@@ -194,7 +205,8 @@ if command -v jq >/dev/null 2>&1; then
            else [null, ""] end
        end) as $out
 
-    | ($out[1] | fit),
+    | ($out[1] | fit) as $shown
+    | $shown,
       (if $live != null then ($live.click_url | safe_url) else "" end),
       # The promo code, so the one actionable word can be picked out of the line.
       (if $live != null then ($live.promo_code // "" | clean) else "" end),
@@ -203,6 +215,20 @@ if command -v jq >/dev/null 2>&1; then
       # shade comes out of that number — no network call, no second process.
       (if $live == null then "0"
        else (if ($now - ($live.shown_at // 0)) < 2000 then "1" else "0" end)
+       end),
+      # The name of the advertiser: what comes before an early colon, as on the
+      # desktop strip. Taken from the fitted text, so a colon the ellipsis cut
+      # away names nobody.
+      (if $live == null then ""
+       else ($shown | split(":")) as $p
+         | if ($p | length) > 1 and ($p[0] | length) > 0 and ($p[0] | length) <= 24
+           then $p[0] else "" end
+       end),
+      # The colour the advertiser chose, as a 256-colour index. The table is
+      # server/lib/creative.ts; a name not in it is amber.
+      (if $live == null then "214"
+       else ({amber: 214, green: 78, teal: 80, blue: 75, violet: 141, pink: 211, coral: 203}
+               [($live.accent // "amber") | tostring] // 214) | tostring
        end),
       ({ ts: $now,
          sid: ($in.session_id | clean),
@@ -216,7 +242,8 @@ if command -v jq >/dev/null 2>&1; then
 
   if [ -n "$OUT" ]; then
     { IFS= read -r DISPLAY; IFS= read -r CLICK_URL; IFS= read -r PROMO
-      IFS= read -r FRESH; IFS= read -r TICKLINE; } <<OUT_EOF
+      IFS= read -r FRESH; IFS= read -r NAME; IFS= read -r ACCENT
+      IFS= read -r TICKLINE; } <<OUT_EOF
 $OUT
 OUT_EOF
   fi
@@ -233,22 +260,34 @@ if [ "$COLOR" -eq 1 ]; then
   if [ "$FRESH" = "1" ]; then TEXT_ON="$TEXT_FRESH"; else TEXT_ON="$TEXT_SETTLED"; fi
 fi
 
-# A promo code is the one word in the line a reader can act on, so it is the one
-# word that gets its own colour, and the only coloured thing on the line. Unlike
-# the arrival fade it stays: the code is still useful on the fifth minute.
-# Substitution is plain parameter expansion, so a code that got truncated away
-# simply is not found and nothing happens.
-if [ -n "$PROMO" ] && [ "$COLOR" -eq 1 ]; then
-  case "$DISPLAY" in
-    *"$PROMO"*)
-      _pre=${DISPLAY%%"$PROMO"*}
-      _post=${DISPLAY#*"$PROMO"}
-      # Closing with the prevailing shade rather than a reset, or the promo
-      # punches a hole in the rest of the line and everything after it goes
-      # back to the terminal's own colour.
-      DISPLAY="$_pre$PROMO_ON$PROMO$TEXT_ON$_post"
-      ;;
-  esac
+# The advertiser's name and the promo code, the one word a reader can act on,
+# in the advertiser's colour; the code bold as well. Unlike the arrival fade it
+# stays: the code is still useful on the fifth minute. Substitution is plain
+# parameter expansion on the text before any escape goes in, so a code that got
+# truncated away is simply not found, and a code like "38" can never match
+# inside a colour sequence.
+if [ "$COLOR" -eq 1 ] && [ -n "$DISPLAY" ]; then
+  case "$ACCENT" in ''|*[!0-9]*) ACCENT=214 ;; esac
+  _head=''
+  _rest=$DISPLAY
+  if [ -n "$NAME" ]; then
+    case "$DISPLAY" in
+      "$NAME"*) _head="$ESC[38;5;${ACCENT}m$NAME$TEXT_ON"; _rest=${DISPLAY#"$NAME"} ;;
+    esac
+  fi
+  if [ -n "$PROMO" ]; then
+    case "$_rest" in
+      *"$PROMO"*)
+        _pre=${_rest%%"$PROMO"*}
+        _post=${_rest#*"$PROMO"}
+        # Closing with bold off and the prevailing shade rather than a reset,
+        # or the code punches a hole in the rest of the line and everything
+        # after it goes back to the terminal's own colour, or stays bold.
+        _rest="$_pre$ESC[1;38;5;${ACCENT}m$PROMO$BOLD_OFF$TEXT_ON$_post"
+        ;;
+    esac
+  fi
+  DISPLAY="$_head$_rest"
 fi
 
 emit "$DISPLAY" "$CLICK_URL" "$FRESH"

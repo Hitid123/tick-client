@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // The editor's PANEL_DEFAULTS and the Mac satellite's, same numbers on purpose.
@@ -142,8 +143,8 @@ func pickSession(sessions []Session) *Session {
 // ------------------------------------------------------------------ creative
 
 type Creative struct {
-	ID, Text, Promo, ClickURL string
-	ShownAt                   float64
+	ID, Text, Promo, Accent, ClickURL string
+	ShownAt                           float64
 }
 
 // Only our own http(s) links, and never with a quote or a control character:
@@ -168,7 +169,7 @@ func currentCreative(path string, now float64) *Creative {
 	}
 	shown, _ := num(m, "shown_at")
 	return &Creative{ID: str(m, "creative_id"), Text: text, Promo: str(m, "promo_code"),
-		ClickURL: safeURL(str(m, "click_url")), ShownAt: shown}
+		Accent: str(m, "accent"), ClickURL: safeURL(str(m, "click_url")), ShownAt: shown}
 }
 
 // Segment kinds, coloured by the palette in win.go.
@@ -186,30 +187,52 @@ type Segment struct {
 
 // A quiet "Ad", then the offer: the advertiser's name and the promo code in
 // colour. The name is what comes before the colon in "Linear: issue
-// tracking…", if there is a colon early enough to be one.
+// tracking…", if there is a colon early enough to be one: 24 characters,
+// counted as characters, so a Cyrillic name is not cut at twelve. The code is
+// its first occurrence after the name, as in the terminal and on the Mac; the
+// server keeps a code to one occurrence.
 func segments(c Creative) []Segment {
 	out := []Segment{{"Ad", segQuiet}}
 	rest := c.Text
-	if i := strings.Index(rest, ":"); i > 0 && i <= 24 {
+	if i := strings.Index(rest, ":"); i > 0 && utf8.RuneCountInString(rest[:i]) <= 24 {
 		out = append(out, Segment{rest[:i], segName})
 		rest = rest[i:]
 	}
-	if c.Promo == "" {
+	i := -1
+	if c.Promo != "" {
+		i = strings.Index(rest, c.Promo)
+	}
+	if i < 0 {
 		return append(out, Segment{rest, segBody})
 	}
-	for rest != "" {
-		i := strings.Index(rest, c.Promo)
-		if i < 0 {
-			out = append(out, Segment{rest, segBody})
-			break
-		}
-		if i > 0 {
-			out = append(out, Segment{rest[:i], segBody})
-		}
-		out = append(out, Segment{c.Promo, segPromo})
-		rest = rest[i+len(c.Promo):]
+	if i > 0 {
+		out = append(out, Segment{rest[:i], segBody})
+	}
+	out = append(out, Segment{c.Promo, segPromo})
+	if tail := rest[i+len(c.Promo):]; tail != "" {
+		out = append(out, Segment{tail, segBody})
 	}
 	return out
+}
+
+// The advertiser's colour on a dark or a light strip. Each name has a shade
+// for each, every pair above 6:1 on its surface. The table is
+// server/lib/creative.ts; a name not in it is amber.
+var accents = map[string][2]uint32{
+	"amber": {0xFFB000, 0x8F5600}, "green": {0x3DD68C, 0x1A7044}, "teal": {0x33D6C9, 0x0D6E66},
+	"blue": {0x62AEFF, 0x1F5FBF}, "violet": {0xB794FF, 0x6A3FC2}, "pink": {0xFF85BE, 0xA8235F},
+	"coral": {0xFF7466, 0xB42318},
+}
+
+func accentColor(name string, dark bool) uint32 {
+	pair, ok := accents[name]
+	if !ok {
+		pair = accents["amber"]
+	}
+	if dark {
+		return pair[0]
+	}
+	return pair[1]
 }
 
 // ------------------------------------------------------------------ settings

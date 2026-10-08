@@ -193,11 +193,12 @@ func rgb(hex uint32) uintptr {
 }
 
 // The brand guide's tokens, both sides of it, as on the Mac.
-type palette struct{ surface, border, quiet, bright, settled, accent uint32 }
+// The advertiser's colour comes from accentColor in logic.go.
+type palette struct{ surface, border, quiet, bright, settled uint32 }
 
 var (
-	darkPal  = palette{0x191817, 0x332F2B, 0x8A8782, 0xF0EEE9, 0xA8A49E, 0xFFB000}
-	lightPal = palette{0xFFFFFF, 0xD6D2CB, 0x8A8782, 0x191817, 0x5C5955, 0x8F5600}
+	darkPal  = palette{0x191817, 0x332F2B, 0x8A8782, 0xF0EEE9, 0xA8A49E}
+	lightPal = palette{0xFFFFFF, 0xD6D2CB, 0x8A8782, 0x191817, 0x5C5955}
 )
 
 // ------------------------------------------------------------------ state
@@ -497,7 +498,7 @@ func colorFor(kind int, fresh bool) uint32 {
 	case segQuiet:
 		return pal.quiet
 	case segName, segPromo:
-		return pal.accent
+		return accentColor(creative.Accent, dark)
 	}
 	if fresh {
 		return pal.bright
@@ -527,7 +528,7 @@ var (
 )
 
 func render(w, h int32, fresh bool) {
-	key := strings.Join([]string{creative.Text, creative.Promo, strconv.Itoa(int(w)), strconv.Itoa(int(h)),
+	key := strings.Join([]string{creative.Text, creative.Promo, creative.Accent, strconv.Itoa(int(w)), strconv.Itoa(int(h)),
 		strconv.FormatBool(fresh), strconv.FormatBool(dark)}, "|")
 	if key == renderKey {
 		return

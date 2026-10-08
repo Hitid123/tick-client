@@ -85,6 +85,37 @@ func TestSegmentsColourNameAndPromo(t *testing.T) {
 	}
 }
 
+func TestSegmentsCountCharactersAndTakeTheCodeOnce(t *testing.T) {
+	// Twenty characters of Cyrillic are forty bytes; still a name.
+	segs := segments(Creative{Text: "Яндекс Облако для дев: GPU · YA10", Promo: "YA10"})
+	if segs[1].Kind != segName || segs[1].Text != "Яндекс Облако для дев" {
+		t.Fatalf("a Cyrillic name within 24 characters is a name, got %+v", segs[1])
+	}
+	// The code in the middle: body, code, body, and the code only once.
+	segs = segments(Creative{Text: "Use TS30 today", Promo: "TS30"})
+	if len(segs) != 4 || segs[2].Kind != segPromo || segs[3].Text != " today" {
+		t.Fatalf("got %+v", segs)
+	}
+}
+
+func TestAccentFallsBackToAmber(t *testing.T) {
+	if accentColor("green", true) != 0x3DD68C || accentColor("green", false) != 0x1A7044 {
+		t.Fatal("green has its own dark and light shades")
+	}
+	if accentColor("chartreuse", true) != 0xFFB000 || accentColor("", false) != 0x8F5600 {
+		t.Fatal("an unknown or missing colour is amber")
+	}
+}
+
+func TestCurrentCreativeCarriesTheAccent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "current.json")
+	os.WriteFile(path, []byte(`{"text":"Acme: x","accent":"teal","expires_at":9e15}`), 0o644)
+	if c := currentCreative(path, 0); c == nil || c.Accent != "teal" {
+		t.Fatalf("got %+v", c)
+	}
+}
+
 func TestPlacementStaysInTheRow(t *testing.T) {
 	dir := t.TempDir()
 	p := pathsFrom(dir)

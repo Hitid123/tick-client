@@ -231,7 +231,7 @@ The line adapts to what the terminal actually supports. Nothing here needs confi
 
 | Situation | What you get |
 | --- | --- |
-| Any 256-colour terminal (iTerm2, Terminal.app, Alacritty, kitty, WezTerm, Windows Terminal, VS Code) | `▌` muted, the offer bright for two seconds and then a step down, the promo code in amber |
+| Any 256-colour terminal (iTerm2, Terminal.app, Alacritty, kitty, WezTerm, Windows Terminal, VS Code) | `▌` muted, the offer bright for two seconds and then a step down, the advertiser's name and promo code in their colour (amber unless they chose another) |
 | `NO_COLOR` set to anything, including empty | The same line with no escape sequences |
 | `TERM=dumb`, or `TERM` unset | No escape sequences |
 | `LANG`/`LC_ALL` set to `C`, `POSIX` or an 8-bit charset | ASCII throughout: `\|` instead of `▌`, `~` instead of `…`, `-` instead of `·` |
