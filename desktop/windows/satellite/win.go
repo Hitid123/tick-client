@@ -271,27 +271,43 @@ func frameOf(w uintptr) rect {
 	return r
 }
 
-// Claude's main window: the largest visible, not minimised, top-level Electron
-// window of a process named claude.exe. Matched by process, not by title: the
-// title is exactly what we have no business reading.
+// The host's main window: the largest visible, not minimised, top-level
+// Electron window of a process with one of the host's file names. Matched by
+// process, not by title: the title is exactly what we have no business reading.
 //
 // The callback is made once. Windows callbacks from Go are a fixed pool that is
 // never freed, and making one per search — sixteen times a second — runs it
 // dry in about two minutes and takes the process down.
 var (
 	best         *claudeWin
+	searching    = hosts[0]
+	activeHost   = hosts[0]
 	enumCallback = syscall.NewCallback(enumWindow)
 )
 
-func findClaude() *claudeWin {
+func findWindow(h Host) *claudeWin {
 	best = nil
+	searching = h
 	pEnumWindows.Call(enumCallback, 0)
 	if best == nil {
-		logOnce("no-claude", "no Claude window found (looking for claude.exe, Chrome_WidgetWin_1)")
+		logOnce("no-window-"+h.Tag, "no %s window found (looking for %v, Chrome_WidgetWin_1)", h.Name, h.Exes)
 	} else {
-		logOnce("claude", "Claude window found: %dx%d at dpi %d", best.r.R-best.r.L, best.r.B-best.r.T, best.dpi)
+		logOnce("window-"+h.Tag, "%s window found: %dx%d at dpi %d", h.Name, best.r.R-best.r.L, best.r.B-best.r.T, best.dpi)
 	}
 	return best
+}
+
+func findClaude() *claudeWin { return findWindow(activeHost) }
+
+// The host whose window is in front, if it is one of ours.
+func frontHost() (*Host, uint32) {
+	pid := foregroundPid()
+	exe := processName(pid)
+	h := hostByExe(exe)
+	if h == nil {
+		logOnce("front-"+exe, "in front: %s (not one of ours)", exe)
+	}
+	return h, pid
 }
 
 func enumWindow(w, _ uintptr) uintptr {
@@ -306,7 +322,7 @@ func enumWindow(w, _ uintptr) uintptr {
 	}
 	var pid uint32
 	pGetWindowThreadProcessId.Call(w, uintptr(unsafe.Pointer(&pid)))
-	if processName(pid) != "claude.exe" {
+	if hostByExe(processName(pid)) == nil || hostByExe(processName(pid)).Tag != searching.Tag {
 		return 1
 	}
 	r := frameOf(w)
@@ -684,10 +700,23 @@ func show(c *Creative, cw *claudeWin, s Settings) {
 // ------------------------------------------------------------------ the loop
 
 func loop() {
-	s := loadSettings(paths)
+	// Only over an app of ours that is in front: an ad floating over some other
+	// app would be showing to nobody we can count, and in the way of everything.
+	h, fg := frontHost()
+	if h == nil {
+		if !pressing {
+			offscreen()
+		}
+		return
+	}
+	if h.Tag != activeHost.Tag {
+		offscreen()
+		activeHost = *h
+	}
+	s := loadSettings(paths, activeHost)
 	var sessions []Session
 	if s.Enabled {
-		sessions = desktopSessions(paths.Activity, nowMs())
+		sessions = desktopSessions(paths.Activity, nowMs(), activeHost.Tag)
 	}
 	if len(sessions) == 0 {
 		offscreen()
@@ -695,10 +724,8 @@ func loop() {
 	}
 	ensureDaemon()
 
-	// Only while Claude itself is in front: an ad floating over some other app
-	// would be showing to nobody we can count, and in the way of everything.
-	cw := findClaude()
-	if cw == nil || foregroundPid() != cw.pid {
+	cw := findWindow(activeHost)
+	if cw == nil || fg != cw.pid {
 		if !pressing {
 			offscreen()
 		}
@@ -710,14 +737,19 @@ func loop() {
 		// Usually not a fault: nothing is sold for this device right now, or
 		// the day's cap per campaign is used up. Said once per stretch, so
 		// "the strip is gone" has an answer in the log.
-		logOnce("no-creative", "Claude is working and in front, but there is no live creative to show (none sold, or today's cap reached)")
+		logOnce("no-creative", "%s is working and in front, but there is no live creative to show (none sold, or today's cap reached)", activeHost.Name)
 		offscreen()
 		return
 	}
 	delete(logged, "no-creative")
 	if now-themeAt > 2000 {
 		themeAt = now
-		dark = themeIsDark()
+		// Claude's own setting for Claude; the others follow Windows.
+		if activeHost.Tag == "cd" {
+			dark = themeIsDark()
+		} else {
+			dark = systemDark()
+		}
 	}
 	if dark {
 		pal = darkPal
@@ -785,7 +817,7 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
 		pSetCapture.Call(w)
 		pressing, dragging = true, false
 		pressX = cursorX()
-		dragBase = loadSettings(paths).DX
+		dragBase = loadSettings(paths, activeHost).DX
 		return 0
 	case wmMouseMove:
 		if !pressing {
@@ -799,7 +831,7 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
 		d := dragBase + float64(moved)/scale
 		dragDX = &d
 		if cw := findClaude(); cw != nil && creative != nil {
-			show(creative, cw, loadSettings(paths))
+			show(creative, cw, loadSettings(paths, activeHost))
 		}
 		return 0
 	case wmLButtonUp:
@@ -809,7 +841,7 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
 		if wasDragging {
 			// Where it actually landed after clamping, so a strip pushed
 			// against an edge does not remember a position past it.
-			_ = savePlacement(paths, appliedDX)
+			_ = savePlacement(paths, activeHost, appliedDX)
 			dragDX = nil
 		} else if creative != nil && creative.ClickURL != "" {
 			// The server counts the click at the other end of this redirect,

@@ -88,11 +88,13 @@ function hostOf(appName) {
 function countsInEditor(mark, host = 'vscode', platform = 'darwin') {
   if (!mark || typeof mark !== 'object') return false;
   if (mark.ag === 'cd' || mark.ag === 'xd') return false;
-  // On a Mac the desktop strip draws Cursor's and Devin's own agents over their
-  // windows, the agent window included, where no extension runs; it counts
-  // them there, so the status bar here only shows. Elsewhere it is ours.
-  if (mark.ag === 'cu') return host === 'cursor' && platform !== 'darwin';
-  if (mark.ag === 'dv') return host === 'devin' && platform !== 'darwin';
+  // On macOS and Windows the desktop strip draws Cursor's and Devin's own
+  // agents over their windows, the agent window included, where no extension
+  // runs; it counts them there, so the status bar here only shows. On Linux,
+  // where there is no strip, it is ours.
+  const strip = platform === 'darwin' || platform === 'win32';
+  if (mark.ag === 'cu') return host === 'cursor' && !strip;
+  if (mark.ag === 'dv') return host === 'devin' && !strip;
   return true;
 }
 

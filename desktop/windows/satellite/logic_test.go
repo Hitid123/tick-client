@@ -30,7 +30,7 @@ func TestOnlyDesktopSessionsCount(t *testing.T) {
 	write(t, filepath.Join(dir, "bad id!.json"), map[string]any{"ts": now, "ev": "UserPromptSubmit", "ag": "cd"})
 
 	got := map[string]Session{}
-	for _, s := range desktopSessions(dir, now) {
+	for _, s := range desktopSessions(dir, now, "cd") {
 		got[s.ID] = s
 	}
 	if len(got) != 2 || !got["desk"].Working || !got["done"].Lingering {
@@ -120,7 +120,7 @@ func TestPlacementStaysInTheRow(t *testing.T) {
 	dir := t.TempDir()
 	p := pathsFrom(dir)
 	write(t, p.Config, map[string]any{"desktop": map[string]any{"dy": 500, "dx": -40}})
-	s := loadSettings(p)
+	s := loadSettings(p, hosts[0])
 	if s.DY != 32 {
 		t.Fatalf("dy must be clamped to the row, got %v", s.DY)
 	}
@@ -130,10 +130,10 @@ func TestPlacementStaysInTheRow(t *testing.T) {
 	if err := os.MkdirAll(p.State, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := savePlacement(p, 77.4); err != nil {
+	if err := savePlacement(p, hosts[0], 77.4); err != nil {
 		t.Fatal(err)
 	}
-	if s := loadSettings(p); s.DX != 77 {
+	if s := loadSettings(p, hosts[0]); s.DX != 77 {
 		t.Fatalf("a drag overrides config, got %v", s.DX)
 	}
 
@@ -177,5 +177,35 @@ func TestOnlyAFullyVisibleStripCounts(t *testing.T) {
 	}
 	if fullyVisible(Rect{100, 1070, 400, 1092}, Rect{0, 300, 1000, 1100}, mon) {
 		t.Fatal("a strip off the bottom of the display does not")
+	}
+}
+
+func TestHostsAreKnownByTheirFileName(t *testing.T) {
+	for exe, tag := range map[string]string{"claude.exe": "cd", "codex.exe": "xd", "cursor.exe": "cu", "windsurf.exe": "dv"} {
+		if h := hostByExe(exe); h == nil || h.Tag != tag {
+			t.Fatalf("%s should be %s, got %+v", exe, tag, h)
+		}
+	}
+	if hostByExe("chrome.exe") != nil {
+		t.Fatal("a browser is not a host")
+	}
+}
+
+func TestEachHostKeepsItsOwnPlace(t *testing.T) {
+	p := pathsFrom(t.TempDir())
+	os.MkdirAll(p.State, 0o755)
+	write(t, p.Config, map[string]any{"desktop": map[string]any{"dx": 10, "cursor": map[string]any{"dy": 20}}})
+	cursor := *hostByExe("cursor.exe")
+	if s := loadSettings(p, cursor); s.DY != 20 || s.DX != 0 {
+		t.Fatalf("Cursor reads its own key, got %+v", s)
+	}
+	if s := loadSettings(p, hosts[0]); s.DX != 10 || s.DY != 18.5 {
+		t.Fatalf("Claude keeps the top level, got %+v", s)
+	}
+	if err := savePlacement(p, cursor, -96); err != nil {
+		t.Fatal(err)
+	}
+	if loadSettings(p, cursor).DX != -96 || loadSettings(p, hosts[0]).DX != 10 {
+		t.Fatal("a drag over Cursor must not move the strip over Claude")
 	}
 }

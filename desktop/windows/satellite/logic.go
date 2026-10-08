@@ -35,6 +35,41 @@ type Paths struct {
 	Home, State, Activity, Current, Ticks, PidFile, Config, Placement, Daemon, NodePath string
 }
 
+// The apps the strip is drawn over, as on the Mac. Each runs our hook through
+// its own agent and tags the note with its own name (hook.mjs); a session is
+// drawn over the app it runs in, only while that app is in front. Matched by
+// the process's file name, never by a window title.
+//
+// dy is the strip's midline above the window's bottom edge, in 96-dpi pixels:
+// the empty row under each app's message box. Cursor's was measured on the
+// Mac; the same app draws the same row on Windows.
+type Host struct {
+	Tag, Name   string
+	Exes        []string
+	DY          float64
+	Placement   string
+	ConfigKey   string // "desktop": {"<key>": {"dx", "dy"}}; "" for Claude, which owns the top level
+}
+
+var hosts = []Host{
+	{Tag: "cd", Name: "Claude", Exes: []string{"claude.exe"}, DY: 18.5, Placement: "desktop-placement.json"},
+	{Tag: "xd", Name: "Codex", Exes: []string{"codex.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
+	{Tag: "cu", Name: "Cursor", Exes: []string{"cursor.exe"}, DY: 15.5, Placement: "desktop-placement-cursor.json", ConfigKey: "cursor"},
+	{Tag: "dv", Name: "Devin", Exes: []string{"devin.exe", "windsurf.exe"}, DY: 18.5, Placement: "desktop-placement-devin.json", ConfigKey: "devin"},
+}
+
+// The host whose process this is, or nil.
+func hostByExe(exe string) *Host {
+	for i := range hosts {
+		for _, e := range hosts[i].Exes {
+			if e == exe {
+				return &hosts[i]
+			}
+		}
+	}
+	return nil
+}
+
 func pathsFrom(home string) Paths {
 	state := filepath.Join(home, "state")
 	return Paths{
@@ -94,7 +129,7 @@ var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // Desktop sessions only: a terminal or editor session has its own line, and
 // counting it here as well would bill one display twice.
-func desktopSessions(dir string, now float64) []Session {
+func desktopSessions(dir string, now float64, tag string) []Session {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -111,7 +146,7 @@ func desktopSessions(dir string, now float64) []Session {
 		}
 		m := readJSON(filepath.Join(dir, name))
 		ts, ok := num(m, "ts")
-		if m == nil || !ok || str(m, "ag") != "cd" {
+		if m == nil || !ok || str(m, "ag") != tag {
 			continue
 		}
 		ev := str(m, "ev")
@@ -245,34 +280,38 @@ type Settings struct {
 	DX, DY  float64
 }
 
-const defaultDY = 18.5
 
-func loadSettings(p Paths) Settings {
-	s := Settings{Enabled: true, DY: defaultDY}
+func loadSettings(p Paths, h Host) Settings {
+	s := Settings{Enabled: true, DY: h.DY}
 	if d, ok := readJSON(p.Config)["desktop"].(map[string]any); ok {
 		if v, ok := d["enabled"].(bool); ok {
 			s.Enabled = v
 		}
-		if v, ok := num(d, "dx"); ok {
+		own := d
+		if h.ConfigKey != "" {
+			own, _ = d[h.ConfigKey].(map[string]any)
+		}
+		if v, ok := num(own, "dx"); ok {
 			s.DX = v
 		}
-		if v, ok := num(d, "dy"); ok {
+		if v, ok := num(own, "dy"); ok {
 			s.DY = math.Min(math.Max(v, 12), 32)
 		}
 	}
-	if v, ok := num(readJSON(p.Placement), "dx"); ok {
+	if v, ok := num(readJSON(filepath.Join(p.State, h.Placement)), "dx"); ok {
 		s.DX = v
 	}
 	return s
 }
 
-func savePlacement(p Paths, dx float64) error {
+func savePlacement(p Paths, h Host, dx float64) error {
+	file := filepath.Join(p.State, h.Placement)
 	data, _ := json.Marshal(map[string]float64{"dx": math.Round(dx)})
-	tmp := p.Placement + ".tmp"
+	tmp := file + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, p.Placement)
+	return os.Rename(tmp, file)
 }
 
 // Where the strip goes, in the window's own pixels: centred on the window plus

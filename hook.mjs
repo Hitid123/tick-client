@@ -72,7 +72,14 @@ const STARTED = Date.now();
 function agentOf(arg, env, payload, raw) {
   if (payload.cursor_version || raw === 'beforeSubmitPrompt' || raw === 'stop' || raw === 'sessionEnd') return 'cu';
   if (env.DEVIN_PROJECT_DIR) return 'dv';
-  if (arg === 'cx') return env.__CFBundleIdentifier === 'com.openai.codex' ? 'xd' : 'cx';
+  if (arg === 'cx') {
+    // macOS: the bundle id, when there is one, settles it. Windows has none;
+    // the Codex app starts its engine with CODEX_INTERNAL_ORIGINATOR_OVERRIDE
+    // set to "Codex" (seen on the running Mac app-server on 08.10), and the
+    // hooks it runs inherit it.
+    if (env.__CFBundleIdentifier) return env.__CFBundleIdentifier === 'com.openai.codex' ? 'xd' : 'cx';
+    return env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE === 'Codex' ? 'xd' : 'cx';
+  }
   return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' ? 'cd' : 'cc';
 }
 
