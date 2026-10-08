@@ -1,0 +1,18 @@
+{
+  "name": "tick",
+  "owner": {
+    "name": "TICK",
+    "url": "https://gettick.dev"
+  },
+  "metadata": {
+    "description": "TICK: get paid for the minutes you spend waiting on Claude."
+  },
+  "plugins": [
+    {
+      "name": "tick",
+      "source": "./claude-mod/tick",
+      "description": "One short sponsored line above the prompt while Claude works, marked Ad. 70% of the gross goes to you, in crypto from $5.",
+      "homepage": "https://gettick.dev"
+    }
+  ]
+}

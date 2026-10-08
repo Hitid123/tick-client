@@ -315,6 +315,28 @@ PLIST_END
   fi
 fi
 
+# --- the Claude Code plugin ----------------------------------------------------
+# Where Claude Code is installed, its own plugin system draws the line in the
+# band above the prompt, in the terminal and in the Claude app alike, and the
+# strip over the Claude window stands aside for it. Installed with Claude
+# Code's own command, from the catalogue in the public repository; Claude Code
+# can show and remove it like any plugin. Only for a real install: the tests
+# run with a sandbox HOME, and this reaches GitHub.
+PLUGIN_ADDED=0
+REAL_HOME=${REAL_HOME:-$(eval echo "~$(id -un)")}
+if [ "${TICK_NO_PLUGIN:-0}" != 1 ] && [ "$HOME" = "$REAL_HOME" ] && command -v claude >/dev/null 2>&1; then
+  claude plugin marketplace add Hitid123/tick-client >/dev/null 2>&1 || true
+  if claude plugin install tick@tick >/dev/null 2>&1; then
+    PLUGIN_ADDED=1
+  else
+    printf 'tick: the Claude Code plugin did not install; the strip covers the Claude app instead\n'
+  fi
+fi
+if [ -f "$MANIFEST" ]; then
+  tmp="$MANIFEST.tmp.$$"
+  jq --argjson p "$PLUGIN_ADDED" '.plugin_added = (.plugin_added == true or $p == 1)' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+fi
+
 # --- a daemon already running is the old code ------------------------------
 # It goes on serving with what it was started with until something stops it;
 # the status line starts the new one within seconds. Only our own process:

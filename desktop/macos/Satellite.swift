@@ -625,6 +625,12 @@ let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
   guard cfg.enabled else { note("off: \"desktop\": {\"enabled\": false} in config.json"); offscreen(); return }
   let sessions = desktopSessions(host)
   guard !sessions.isEmpty else { note("waiting: no session in the \(host.name) app is working"); offscreen(); return }
+  // The TICK mod draws the line inside the Claude app itself, above the
+  // prompt, and says so every few seconds while it does. Then the strip steps
+  // aside: one display, one impression.
+  if host.tag == CLAUDE.tag, let ts = readJSON(inHome("state/mod-desktop.json"))?["ts"] as? Double, nowMs() - ts < 10_000 {
+    note("standing aside: the TICK mod draws the line in the Claude app"); offscreen(); return
+  }
   ensureDaemon()
   if host.tag != activeHost.tag { offscreen(); activeHost = host }
 

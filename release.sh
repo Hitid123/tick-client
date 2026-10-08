@@ -5,6 +5,10 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+# The Claude Code plugin carries its own copy of the daemon, for machines
+# where the plugin is all that was installed. Always this one.
+cp daemon.mjs claude-mod/tick/runtime/daemon.mjs
+
 FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js install.sh uninstall.sh tick-satellite-macos TICK.icns tick-satellite-windows.exe install-windows.mjs"
 
 if command -v shasum >/dev/null 2>&1; then

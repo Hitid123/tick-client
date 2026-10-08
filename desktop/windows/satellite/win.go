@@ -722,6 +722,16 @@ func loop() {
 		offscreen()
 		return
 	}
+	// The TICK mod draws the line inside the Claude app itself and says so
+	// every few seconds; the strip steps aside: one display, one impression.
+	if activeHost.Tag == "cd" {
+		if ts, ok := num(readJSON(filepath.Join(paths.State, "mod-desktop.json")), "ts"); ok && nowMs()-ts < 10000 {
+			logOnce("mod", "standing aside: the TICK mod draws the line in the Claude app")
+			offscreen()
+			return
+		}
+		delete(logged, "mod")
+	}
 	ensureDaemon()
 
 	cw := findWindow(activeHost)

@@ -1,0 +1,4 @@
+{
+  "description": "TICK: the sponsored line above the prompt",
+  "modules": ["./register.js"]
+}

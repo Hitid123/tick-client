@@ -43,6 +43,14 @@ if [ -f "$PLIST" ]; then
   say 'stopped the desktop satellite and removed its login item'
 fi
 
+# --- the Claude Code plugin ----------------------------------------------------
+if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && [ "$(jq -r '.plugin_added // false' "$MANIFEST")" = true ] \
+   && command -v claude >/dev/null 2>&1; then
+  claude plugin uninstall tick@tick >/dev/null 2>&1 || true
+  claude plugin marketplace remove tick >/dev/null 2>&1 || true
+  say 'removed the Claude Code plugin'
+fi
+
 # --- the Codex hook and the OpenCode plugin -----------------------------------
 # Only what the installer recorded adding, and only our own bytes.
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then

@@ -248,11 +248,15 @@ async function install() {
 
   say('installed.');
   process.stdout.write(`
-  The Claude desktop app now shows one short sponsored line under its message box
-  while Claude works, marked "Ad". Drag it sideways to move it within that row;
-  a click opens the advertiser.
-
-  It sees only where Claude's window is, never what is in it.
+  The Claude app, the Codex app and Cursor now show one short sponsored line under
+  the message box while their AI works, marked "Ad". Claude Code in a terminal shows
+  it at the bottom. Drag the line sideways to move it within its row; a click opens
+  the advertiser.
+${codexAdded && !prev?.codex_added ? `
+  Codex asks to review a new hook once before it runs it: allow ours when it does.
+` : ''}
+  It sees only where each window is, never what is in it.
+  What it sees: node "${join(HOME, 'install-windows.mjs')}" --report
   Turn it off:  "desktop": {"enabled": false} in ${configPath}
   Remove it:    node "${join(HOME, 'install-windows.mjs')}" --uninstall
 
