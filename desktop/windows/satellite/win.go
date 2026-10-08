@@ -706,9 +706,14 @@ func loop() {
 	now := nowMs()
 	c := currentCreative(paths.Current, now)
 	if c == nil {
+		// Usually not a fault: nothing is sold for this device right now, or
+		// the day's cap per campaign is used up. Said once per stretch, so
+		// "the strip is gone" has an answer in the log.
+		logOnce("no-creative", "Claude is working and in front, but there is no live creative to show (none sold, or today's cap reached)")
 		offscreen()
 		return
 	}
+	delete(logged, "no-creative")
 	if now-themeAt > 2000 {
 		themeAt = now
 		dark = themeIsDark()

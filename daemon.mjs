@@ -200,9 +200,14 @@ export function buildBatch(items, salt) {
  * So: ask for what is missing, not for a bucketful, and after a request that
  * brought back nothing new, wait longer each time before asking again.
  */
-export function fetchPlan(queue, cfg, state, now) {
+export function fetchPlan(queue, cfg, state, now, currentExpiresAt = 0) {
   if (queue.length >= cfg.queue_low_water) return { fetch: false, n: 0 };
-  if (now < state.until) return { fetch: false, n: 0 };
+  // The backoff protects the server while there is nothing to be had. It must
+  // not leave the line empty: when the creative on screen is about to run out
+  // and nothing is queued behind it, ask now rather than at the end of a
+  // doubled wait.
+  const runningOut = queue.length === 0 && currentExpiresAt > 0 && currentExpiresAt - now <= cfg.cycle_ms;
+  if (now < state.until && !runningOut) return { fetch: false, n: 0 };
   const missing = cfg.queue_low_water - queue.length;
   return { fetch: true, n: Math.max(1, Math.min(cfg.queue_fetch, missing)) };
 }
@@ -473,12 +478,16 @@ async function cycle(cfg, device, cycleNo) {
     }
 
     const queue = readJson(P.queue, []) ?? [];
-    const plan = fetchPlan(queue, cfg, fetchState, Date.now());
+    const onScreen = readJson(P.current, null);
+    const plan = fetchPlan(queue, cfg, fetchState, Date.now(),
+      typeof onScreen?.expires_at === 'number' ? onScreen.expires_at : 0);
     if (plan.fetch) {
       const res = await request(cfg, 'GET', `/creatives?n=${plan.n}`, undefined, device.token);
       let gained = 0;
       if (res.ok && Array.isArray(res.json?.creatives)) {
-        const seen = new Set(queue.map((c) => c.creative_id));
+        // The creative on screen counts as seen: the same line queued right
+        // behind itself would be one ad for twice its window.
+        const seen = new Set([...queue.map((c) => c.creative_id), onScreen?.creative_id].filter(Boolean));
         for (const c of res.json.creatives) {
           if (!c?.creative_id || typeof c.text !== 'string' || seen.has(c.creative_id)) continue;
           seen.add(c.creative_id);

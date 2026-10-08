@@ -61,6 +61,16 @@ function stopSatellite() {
   if (SYSTEM) quiet('taskkill', ['/IM', 'tick-satellite.exe', '/F']);
 }
 
+// The daemon keeps running the code it started with. After an update it would
+// go on with the old version until it happened to exit, so it is stopped too;
+// the satellite starts the new one within half a minute.
+function stopDaemon() {
+  if (!SYSTEM) return;
+  let pid = 0;
+  try { pid = Number(readFileSync(join(HOME, 'state', 'daemon.pid'), 'utf8').trim()); } catch { /* not running */ }
+  if (Number.isInteger(pid) && pid > 0) quiet('taskkill', ['/PID', String(pid), '/F']);
+}
+
 function addHooks(settings) {
   settings.hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
   let added = false;
@@ -114,6 +124,7 @@ async function install() {
   }
 
   stopSatellite();
+  stopDaemon();
   mkdirSync(join(HOME, 'state'), { recursive: true });
   writeFileSync(join(HOME, 'daemon.mjs'), bodies.get('daemon.mjs'));
   writeFileSync(join(HOME, 'hook.mjs'), bodies.get('hook.mjs'));
@@ -167,12 +178,8 @@ async function install() {
 
 function uninstall() {
   stopSatellite();
-  if (SYSTEM) {
-    quiet('reg', ['delete', RUN_KEY, '/v', 'TICK', '/f']);
-    let pid = 0;
-    try { pid = Number(readFileSync(join(HOME, 'state', 'daemon.pid'), 'utf8').trim()); } catch { /* not running */ }
-    if (Number.isInteger(pid) && pid > 0) quiet('taskkill', ['/PID', String(pid), '/F']);
-  }
+  stopDaemon();
+  if (SYSTEM) quiet('reg', ['delete', RUN_KEY, '/v', 'TICK', '/f']);
 
   const m = readJson(MANIFEST, null);
   if (m && existsSync(SETTINGS)) {
