@@ -86,7 +86,15 @@ else
   printf '{}\n' > "$SETTINGS"
 fi
 
-if [ "$HAD_FIELD" -eq 1 ]; then
+# Our own line from an earlier install is not somebody else's to protect: an
+# update should not ask. The line found before the first install is still in
+# the manifest's backup, and uninstall still puts that one back.
+OURS=0
+if [ "$HAD_FIELD" -eq 1 ] && [ "$(jq -r '.statusLine.command? // ""' "$SETTINGS" 2>/dev/null)" = "$TICK_HOME/statusline.sh" ]; then
+  OURS=1
+fi
+
+if [ "$HAD_FIELD" -eq 1 ] && [ "$OURS" -eq 0 ]; then
   printf '\ntick: ~/.claude/settings.json already has a statusLine:\n\n'
   jq '.statusLine' "$SETTINGS" | sed 's/^/    /'
   printf '\nIt is saved in %s\n' "$BACKUP"
