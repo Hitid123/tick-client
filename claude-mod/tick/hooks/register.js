@@ -105,7 +105,7 @@ export function register(on) {
       flexDirection: 'row',
       children: [
         Text({ color: 'subtle', children: ['Ad  '] }),
-        creative.click_url
+        creative.click_url && (surface === 'desktop' || terminalLinks)
           ? Link({ href: creative.click_url, children: words })
           : Box({ flexDirection: 'row', children: words }),
       ],
@@ -138,6 +138,11 @@ async function setUp($) {
   const user = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
   home = (explicit || `${user}/.tick`).replace(/\\/g, '/')
   sid = await $.session.id()
+  const program = (await $.env.get('TERM_PROGRAM')) || ''
+  const term = (await $.env.get('TERM')) || ''
+  terminalLinks = Boolean(await $.env.get('WT_SESSION')) || Boolean(await $.env.get('KITTY_WINDOW_ID'))
+    || /iTerm|vscode|WezTerm|ghostty|Hyper|Tabby|rio|WarpTerminal/i.test(program)
+    || /kitty|ghostty|alacritty|foot|wezterm/i.test(term)
   try {
     const settings = await $.settings.read()
     ourStatusLine = String(settings?.statusLine?.command ?? '').includes('.tick')
@@ -184,6 +189,11 @@ async function pulse($) {
 let lastBeat = 0
 let wasVisible = false
 let inApp = false
+// Whether the terminal turns a link into a clickable word. Where it cannot,
+// Claude Code prints the address after the text — the owner's PowerShell
+// window on 08.10 showed the line followed by gettick.dev/c/… — so there the
+// line goes out as plain text. Known by what the terminal says about itself.
+let terminalLinks = false
 let surfacesAt = 0
 
 // The live line, as the daemon left it. Redrawn only when it changes.

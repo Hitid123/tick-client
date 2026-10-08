@@ -16,9 +16,9 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[] } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string> } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, { HOME: '/Users/dev' })
+  mock.env(on, env)
   const runs: any[] = []
   const writes: any[] = []
   on('session.start', () => ({ cwd: '/work' }))
@@ -52,6 +52,23 @@ test('during a turn the band shows the line: marked Ad, clickable, in the advert
   expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: LINE.click_url } })
   expect(await ui.find({ type: 'Text', text: 'Acme' })).toMatchObject({ props: { color: '#3DD68C', bold: true } })
   expect(await ui.find({ type: 'Text', text: 'GO5' })).toMatchObject({ props: { color: '#3DD68C', bold: true } })
+})
+
+test('a terminal that cannot make a link clickable gets the line without its address', async ($, on) => {
+  machine(on)  // HOME only: no Windows Terminal, no known program
+  await start($, 'terminal')
+  await $.turn.start({ turnId: 't1', text: '' })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: 'Acme' })).toBeDefined()
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+})
+
+test('Windows Terminal makes it a link', async ($, on) => {
+  machine(on, { env: { HOME: '/Users/dev', WT_SESSION: 'abc' } })
+  await start($, 'terminal')
+  await $.turn.start({ turnId: 't1', text: '' })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: LINE.click_url } })
 })
 
 test('in a terminal that already has our status line, the band is left to Claude Code', async ($, on) => {
