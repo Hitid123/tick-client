@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// TICK installer for Windows: the desktop strip for the Claude app, the Codex
-// app and Cursor, and the status line for Claude Code in a terminal.
+// TICK installer for Windows: the desktop strip for the Codex app and Cursor
+// (and the Claude app where Claude Code's plugin cannot draw), and the TICK
+// plugin for Claude Code, which draws the line itself in the terminal and in
+// the Claude app.
 //
 //   iwr https://raw.githubusercontent.com/Hitid123/tick-client/main/install-windows.mjs -OutFile $env:TEMP\tick-install.mjs
 //   node $env:TEMP\tick-install.mjs
@@ -16,7 +18,9 @@
 // What it changes outside %USERPROFILE%\.tick, and nothing else:
 //   - our hook entries in %USERPROFILE%\.claude\settings.json, in the same
 //     form the editor extension and the Mac installer write, so they never
-//     duplicate, and the statusLine if there is none yet; backed up first;
+//     duplicate; backed up first;
+//   - where Claude Code is installed, the TICK plugin, with Claude Code's own
+//     `claude plugin install`;
 //   - where Codex is installed, one marked block in .codex\config.toml;
 //   - where OpenCode is installed, one plugin file in its plugins folder;
 //   - one value under HKCU\...\CurrentVersion\Run, so the satellite starts at
@@ -36,15 +40,14 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const SETTINGS = join(CLAUDE_DIR, 'settings.json');
 const MANIFEST = join(HOME, 'install.manifest.json');
 const EXE = join(HOME, 'tick-satellite.exe');
-const FILES = ['daemon.mjs', 'hook.mjs', 'statusline.sh', 'nojq.sh', 'opencode-plugin.js', 'tick-satellite-windows.exe', 'install-windows.mjs'];
+const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'tick-satellite-windows.exe', 'install-windows.mjs'];
 const CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const CODEX_CONFIG = join(CODEX_DIR, 'config.toml');
 const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
 const OPENCODE_PLUGIN = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'plugins', 'tick.js');
-// Claude Code on Windows runs its commands through Git Bash (the probe of
-// 08.10 saw ...\Git\bin\bash.exe run our hook), so the status line is the
-// same POSIX script as on a Mac. Forward slashes: bash takes them as they are.
-const STATUS_CMD = `sh "${join(HOME, 'statusline.sh').replace(/\\/g, '/')}"`;
+// A status line of ours from the version that set one (08.10, briefly): taken
+// back now that the plugin draws the line in the terminal.
+const isOurStatusLine = (sl) => String(sl?.command ?? '').includes('.tick') && String(sl?.command ?? '').includes('statusline.sh');
 const EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd'];
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 // The tests run this on a Mac against a sandbox: everything that would reach
@@ -175,8 +178,6 @@ async function install() {
   mkdirSync(join(HOME, 'state'), { recursive: true });
   writeFileSync(join(HOME, 'daemon.mjs'), bodies.get('daemon.mjs'));
   writeFileSync(join(HOME, 'hook.mjs'), bodies.get('hook.mjs'));
-  writeFileSync(join(HOME, 'statusline.sh'), bodies.get('statusline.sh'));
-  writeFileSync(join(HOME, 'nojq.sh'), bodies.get('nojq.sh'));
   writeFileSync(join(HOME, 'opencode-plugin.js'), bodies.get('opencode-plugin.js'));
   writeFileSync(EXE, bodies.get('tick-satellite-windows.exe'));
   writeFileSync(join(HOME, 'install-windows.mjs'), bodies.get('install-windows.mjs'));
@@ -198,16 +199,27 @@ async function install() {
     : join(HOME, `settings.backup.${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}.json`);
   if (!prev?.backup || !existsSync(prev.backup)) writeFileSync(backup, raw);
   const added = addHooks(settings);
-  // The status line for Claude Code in a terminal: ours if there is none, left
-  // alone if somebody else's is there.
-  let statusLine = prev?.status_line ?? false;
-  if (!settings.statusLine) {
-    settings.statusLine = { type: 'command', command: STATUS_CMD, padding: 0, refreshInterval: 3 };
-    statusLine = true;
-  } else if (!String(settings.statusLine.command ?? '').includes('.tick')) {
-    say('your own statusLine stays; the terminal line is not installed (the apps still are)');
-  }
+  // The plugin draws the line in the terminal; a status line of ours from the
+  // briefly published version that set one goes.
+  if (isOurStatusLine(settings.statusLine)) delete settings.statusLine;
   writeFileSync(SETTINGS, `${JSON.stringify(settings, null, 2)}\n`);
+
+  // The TICK plugin, with Claude Code's own command, where Claude Code is
+  // installed: it draws the line above the prompt in the terminal and in the
+  // Claude app, and the strip stands aside over Claude for it. Through a
+  // shell, since claude is claude.exe or an npm claude.cmd.
+  let plugin = prev?.plugin_added ?? false;
+  if (SYSTEM) {
+    try {
+      execFileSync('claude', ['plugin', 'marketplace', 'add', 'Hitid123/tick-client'], { stdio: 'ignore', shell: true, timeout: 120_000 });
+    } catch { /* already added, or no claude: the install below says which */ }
+    try {
+      execFileSync('claude', ['plugin', 'install', 'tick@tick'], { stdio: 'ignore', shell: true, timeout: 120_000 });
+      plugin = true;
+    } catch {
+      say('Claude Code was not found, so its plugin is not installed; the strip covers the Claude app');
+    }
+  }
 
   // The Codex app (and Codex in a terminal or editor) runs hooks from
   // config.toml: one marked block, the same the Mac installer and the editor
@@ -236,7 +248,7 @@ async function install() {
     // Already there means the editor extension put it there, and it stays its own.
     hook: added === 'all' || prev?.hook ? HOOK_CMD : null,
     heartbeat: added === 'heartbeat' || prev?.heartbeat ? HOOK_CMD : null,
-    status_line: statusLine,
+    plugin_added: plugin,
     codex_added: codexAdded,
     opencode_plugin: opencode,
   }, null, 2)}\n`);
@@ -248,10 +260,9 @@ async function install() {
 
   say('installed.');
   process.stdout.write(`
-  The Claude app, the Codex app and Cursor now show one short sponsored line under
-  the message box while their AI works, marked "Ad". Claude Code in a terminal shows
-  it at the bottom. Drag the line sideways to move it within its row; a click opens
-  the advertiser.
+  The Claude app, the Codex app and Cursor now show one short sponsored line by the
+  message box while their AI works, marked "Ad"; Claude Code in a terminal shows it
+  above the prompt. A click opens the advertiser.
 ${codexAdded && !prev?.codex_added ? `
   Codex asks to review a new hook once before it runs it: allow ours when it does.
 ` : ''}
@@ -280,11 +291,17 @@ function uninstall() {
       const settings = readJson(SETTINGS, null);
       if (settings) {
         removeHooks(settings, m.hook ? undefined : [HEARTBEAT]);
-        if (m.status_line && String(settings.statusLine?.command ?? '').includes('.tick')) delete settings.statusLine;
+        if (isOurStatusLine(settings.statusLine)) delete settings.statusLine;
         writeFileSync(SETTINGS, `${JSON.stringify(settings, null, 2)}\n`);
         say('settings.json changed since install; removed only our hook entries');
       }
     }
+  }
+  if (m?.plugin_added && SYSTEM) {
+    for (const args of [['plugin', 'uninstall', 'tick@tick'], ['plugin', 'marketplace', 'remove', 'tick']]) {
+      try { execFileSync('claude', args, { stdio: 'ignore', shell: true, timeout: 60_000 }); } catch { /* already gone */ }
+    }
+    say('removed the Claude Code plugin');
   }
   if (m?.codex_added) removeCodexBlock();
   if (m?.opencode_plugin && existsSync(m.opencode_plugin)) {
@@ -316,7 +333,9 @@ function report() {
   say(cur ? `line: ${cur.expires_at > now ? 'live' : 'expired'} — "${cur.text}"` : 'line: none yet');
   const settings = readJson(SETTINGS, {}) ?? {};
   say(`Claude Code hooks: ${EVENTS.every((e) => JSON.stringify(settings.hooks?.[e] ?? '').includes('hook.mjs')) ? 'yes' : 'no'}, heartbeat: ${JSON.stringify(settings.hooks?.PostToolUse ?? '').includes('hook.mjs') ? 'yes' : 'no'}`);
-  say(`status line: ${String(settings.statusLine?.command ?? 'none')}`);
+  say(`Claude Code plugin: ${settings.enabledPlugins?.['tick@tick'] === true ? 'enabled' : 'not installed'}`);
+  const beat = readJson(join(HOME, 'state', 'mod-desktop.json'), null);
+  say(`plugin drawing in the Claude app: ${beat ? `signalled ${ago(beat.ts)}` : 'never yet'}`);
   say(`Codex config: ${existsSync(CODEX_CONFIG) ? (readText(CODEX_CONFIG).includes('TICK activity hook') ? 'has our hook' : 'no hook of ours') : 'not found'}`);
   say(`OpenCode plugin: ${existsSync(OPENCODE_PLUGIN) ? 'yes' : 'no'}`);
   say('recent turns (agent, event, when):');

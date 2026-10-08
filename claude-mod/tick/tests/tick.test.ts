@@ -112,6 +112,23 @@ test('in a terminal the strip is never told to stand aside', async ($, on) => {
   expect(writes.some((w) => String(w.path).endsWith('/state/mod-desktop.json'))).toBe(false)
 })
 
+test('on Windows the home is USERPROFILE, not the HOME Git Bash spells /c/Users/...', async ($, on) => {
+  const runs: any[] = []
+  mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/c/Users/dev', USERPROFILE: 'C:\\Users\\dev' })
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: undefined }))
+  on('session.id', () => ({ value: 'abc' }))
+  on('settings.read', () => ({ value: {} }))
+  on('fs.read', () => ({ deny: 'no such file' }))
+  on('process.run', ($, e) => { runs.push(e); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const launch = runs.find((r) => String(r.argv?.[2] ?? '').includes('daemon.pid'))
+  expect(launch.argv[3]).toBe('C:/Users/dev/.tick')
+  // A daemon started from the Claude app opens no console window.
+  expect(launch.argv[2]).toContain('windowsHide:true')
+})
+
 test('with nothing sold the band is empty and nothing is counted', async ($, on) => {
   const { clock, ticks } = machine(on, { line: null })
   await start($, 'desktop')

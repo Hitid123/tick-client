@@ -132,7 +132,10 @@ export function register(on) {
 
 async function setUp($) {
   const explicit = await $.env.get('TICK_HOME')
-  const user = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+  // Windows first: under Git Bash HOME reads /c/Users/..., a path Windows
+  // programs, and so $.fs, do not open. USERPROFILE is the real one there and
+  // absent on a Mac.
+  const user = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
   home = (explicit || `${user}/.tick`).replace(/\\/g, '/')
   sid = await $.session.id()
   try {
@@ -244,7 +247,7 @@ let noNode = false
 
 // The installed client's daemon if there is one, else the plugin's own copy;
 // either way with ~/.tick as its home, and either way only one runs.
-const LAUNCH = "const fs=require('fs'),p=require('path'),{spawn}=require('child_process');const h=process.argv[1];let alive=false;try{process.kill(+fs.readFileSync(p.join(h,'state','daemon.pid'),'utf8'),0);alive=true}catch{}const own=p.join(h,'daemon.mjs');const d=fs.existsSync(own)?own:process.argv[2];if(!alive&&fs.existsSync(d))spawn(process.execPath,[d],{detached:true,stdio:'ignore',env:{...process.env,TICK_HOME:h}}).unref()"
+const LAUNCH = "const fs=require('fs'),p=require('path'),{spawn}=require('child_process');const h=process.argv[1];let alive=false;try{process.kill(+fs.readFileSync(p.join(h,'state','daemon.pid'),'utf8'),0);alive=true}catch{}const own=p.join(h,'daemon.mjs');const d=fs.existsSync(own)?own:process.argv[2];if(!alive&&fs.existsSync(d))spawn(process.execPath,[d],{detached:true,stdio:'ignore',windowsHide:true,env:{...process.env,TICK_HOME:h}}).unref()"
 
 // The advertiser's name (before an early colon), and the promo code: its
 // first occurrence after the name. The same split as every other surface.
