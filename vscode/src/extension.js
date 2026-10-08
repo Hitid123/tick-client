@@ -555,7 +555,7 @@ function activityMarks() {
     const sessionId = core.safeSessionId(name.slice(0, -5));
     if (!sessionId) continue;
     const mark = readJson(path.join(P.activity, name), null);
-    if (core.countsInEditor(mark, HOST)) out.push({ sessionId, mark });
+    if (core.countsInEditor(mark, HOST, process.platform)) out.push({ sessionId, mark });
   }
   return out;
 }

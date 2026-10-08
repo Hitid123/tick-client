@@ -85,11 +85,14 @@ function hostOf(appName) {
  * open beside Cursor does not count Cursor's work. Claude Code, Codex and
  * OpenCode run inside any of these editors, so any of them may count those.
  */
-function countsInEditor(mark, host = 'vscode') {
+function countsInEditor(mark, host = 'vscode', platform = 'darwin') {
   if (!mark || typeof mark !== 'object') return false;
   if (mark.ag === 'cd' || mark.ag === 'xd') return false;
-  if (mark.ag === 'cu') return host === 'cursor';
-  if (mark.ag === 'dv') return host === 'devin';
+  // On a Mac the desktop strip draws Cursor's and Devin's own agents over their
+  // windows, the agent window included, where no extension runs; it counts
+  // them there, so the status bar here only shows. Elsewhere it is ours.
+  if (mark.ag === 'cu') return host === 'cursor' && platform !== 'darwin';
+  if (mark.ag === 'dv') return host === 'devin' && platform !== 'darwin';
   return true;
 }
 

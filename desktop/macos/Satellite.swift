@@ -55,6 +55,18 @@ let HOSTS = [
        placement: "state/desktop-placement.json"),
   Host(bundle: "com.openai.codex", tag: "xd", name: "Codex", dy: 18.5,
        placement: "state/desktop-placement-codex.json"),
+  // Cursor 3 opens projects in its agent window, which runs no third-party
+  // extension and so has no status bar of ours — checked in its logs on 08.10:
+  // only Cursor's own extensions start there. Its agent's hook still reports
+  // (`cu`), so on a Mac the strip draws over Cursor as over Codex, whichever of
+  // its windows is open. Devin the same, for its agent (`dv`).
+  // 15.5: the row under Cursor's composer ("This Mac"), measured on the
+  // owner's screenshot of Cursor 3.23 on 08.10 — 30 pt from the window's bottom
+  // edge to the composer, the strip centred in it.
+  Host(bundle: "com.todesktop.230313mzl4w4u92", tag: "cu", name: "Cursor", dy: 15.5,
+       placement: "state/desktop-placement-cursor.json"),
+  Host(bundle: "com.exafunction.windsurf", tag: "dv", name: "Devin", dy: 18.5,
+       placement: "state/desktop-placement-devin.json"),
 ]
 let CLAUDE = HOSTS[0]
 let ENV = ProcessInfo.processInfo.environment
@@ -606,7 +618,7 @@ let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
   // app would be showing to nobody we can count, and in the way of everything.
   guard let host = frontHost() else {
     let busy = HOSTS.contains { !desktopSessions($0).isEmpty }
-    note(busy ? "hidden: neither Claude nor Codex is the app in front" : "waiting: no session in the Claude or Codex app is working")
+    note(busy ? "hidden: none of Claude, Codex, Cursor, Devin is the app in front" : "waiting: no session in Claude, Codex, Cursor or Devin is working")
     offscreen(); return
   }
   let cfg = settings(host)
