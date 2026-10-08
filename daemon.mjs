@@ -441,10 +441,43 @@ function syncSpinner(cfg) {
   }
 }
 
+/**
+ * A device token belongs to the server that issued it. Pointed at another one
+ * (server/scripts/dev-up.mjs does that, and back), the client keeps each
+ * server's token apart and starts clean there: the queue's click links, the
+ * outbox's creative ids and the balance all mean nothing to the new server.
+ * Until 08.10 the token simply went along, the new server answered 401 to
+ * everything, and the line kept whatever the old one had sold — the owner's
+ * Mac served the local test server's ads for five days after a demo.
+ *
+ * A token written before this existed has no server on it; it is taken to be
+ * the current one's, which it was for everybody who never switched.
+ */
+function followServer(device, cfg) {
+  if (!device.api_base) {
+    if (device.token) { device.api_base = cfg.api_base; writeJson(P.device, device); }
+    return false;
+  }
+  if (device.api_base === cfg.api_base) return false;
+  const tokens = { ...(device.tokens ?? {}) };
+  if (device.token) tokens[device.api_base] = device.token;
+  device.token = tokens[cfg.api_base] ?? null;
+  delete tokens[cfg.api_base];
+  device.tokens = tokens;
+  device.api_base = cfg.api_base;
+  writeJson(P.device, device);
+  for (const f of [P.queue, P.current, P.outbox, P.carry, P.balance]) {
+    try { unlinkSync(f); } catch { /* not there */ }
+  }
+  fetchState = { until: 0, step: 0 };
+  return true;
+}
+
 /** How long to wait before asking for creatives again. See fetchPlan. */
 let fetchState = { until: 0, step: 0 };
 
 async function cycle(cfg, device, cycleNo) {
+  followServer(device, cfg);
   const now = Date.now();
 
   const ticks = takeTicks();
@@ -462,6 +495,7 @@ async function cycle(cfg, device, cycleNo) {
     const res = await request(cfg, 'POST', '/devices', { fingerprint: device.fingerprint });
     if (res.ok && res.json?.device_token) {
       device.token = res.json.device_token;
+      device.api_base = cfg.api_base;
       writeJson(P.device, device);
     }
   }

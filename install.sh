@@ -233,10 +233,32 @@ PLIST_END
     JOB="gui/$(id -u)/dev.gettick.satellite"
     if [ "$APP_CHANGED" -eq 1 ] || [ "$PLIST_CHANGED" -eq 1 ] || ! launchctl print "$JOB" >/dev/null 2>&1; then
       launchctl bootout "$JOB" 2>/dev/null || true
+      # bootout returns before the job is gone, and bootstrapping over a job
+      # that is still leaving fails: the owner's update on 08.10 ended with
+      # "will start at your next login" and no strip. Wait for it to go, up
+      # to five seconds, and give the bootstrap a second try.
+      i=0
+      while launchctl print "$JOB" >/dev/null 2>&1 && [ "$i" -lt 25 ]; do sleep 0.2; i=$((i + 1)); done
       launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
+        || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; } \
         || printf 'tick: the desktop satellite will start at your next login\n'
     fi
   fi
+fi
+
+# --- a daemon already running is the old code ------------------------------
+# It goes on serving with what it was started with until something stops it;
+# the status line starts the new one within seconds. Only our own process:
+# the pid file could be stale and the number someone else's by now.
+PIDF="$TICK_HOME/state/daemon.pid"
+if [ -f "$PIDF" ]; then
+  pid=$(tr -d ' \n' <"$PIDF" 2>/dev/null || true)
+  case "$pid" in
+    ''|*[!0-9]*) ;;
+    *) if ps -p "$pid" -o command= 2>/dev/null | grep -qF "$TICK_HOME/daemon.mjs"; then
+         kill "$pid" 2>/dev/null || true
+       fi ;;
+  esac
 fi
 
 cat <<'DONE'
