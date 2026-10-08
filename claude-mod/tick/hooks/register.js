@@ -10,7 +10,7 @@
 // This file reads that line, draws it while Claude works, and appends the same
 // three-second ticks every other surface appends (TZ section 4.1):
 //
-//   - drawn while a turn runs, and four seconds after it, then gone;
+//   - drawn while a turn runs, gone the moment it ends;
 //   - a tick every three seconds while drawn; api_ms grows only while the
 //     turn runs, so the daemon's aggregate() counts it as it counts the rest;
 //   - in a terminal where our status line already shows the line, the band
@@ -23,7 +23,9 @@
 // turn is running, and Claude's theme setting. Never a prompt, a message or a
 // tool call: no hook here is on any of those events.
 
-const LINGER_MS = 4000
+// Out the moment the turn ends: the owner, 08.10, "as soon as it stops, it
+// should go". It used to stay four seconds.
+const LINGER_MS = 0
 const TICK_MS = 3000
 const BEAT_MS = 3000
 
@@ -52,6 +54,9 @@ export function register(on) {
     await $.command.register({ name: 'tick', description: 'TICK: what the sponsored line is doing' })
     await setUp($)
     $.clock.every(1000, () => pulse($))
+    // While a turn runs and nothing is on screen yet, look for a line four
+    // times a second: one arriving mid-turn shows within a quarter second.
+    $.clock.every(250, () => (working && !creative ? refresh($) : undefined))
     $.clock.every(TICK_MS, () => count($))
     $.clock.every(30000, () => ensureDaemon($))
     return next(e)
@@ -60,10 +65,13 @@ export function register(on) {
   // e.text is the prompt: never read. Only the fact that a turn began.
   on('turn.start', async ($, e, next) => {
     working = true
+    // The line as it stands this instant, not as of the last second's read,
+    // so the band lights up with the turn rather than up to a second after.
+    await refresh($)
     $.ui.invalidate('ui.render')
-    // A daemon that went idle between turns is woken now, so a line is there
-    // by the time the band would show it.
-    await ensureDaemon($)
+    // A daemon that went idle between turns is woken, without holding the
+    // turn up for it.
+    void ensureDaemon($)
     return next(e)
   })
 
@@ -151,6 +159,12 @@ async function setUp($) {
 async function pulse($) {
   await refresh($)
   const now = await $.clock.now()
+  // Where this session is drawn. Not settled at session.start in the Claude
+  // app (its surface attaches after), so asked again every few seconds.
+  if (now - surfacesAt > 5000) {
+    surfacesAt = now
+    try { inApp = (await $.session.surfaces()).includes('desktop') } catch { /* keep the last answer */ }
+  }
   // And once more when it should go: without that last redraw the band kept
   // its line after the linger, on screen and no longer counted (08.10).
   const visible = Boolean(creative) && (working || renderWorking || now - workEndedAt < LINGER_MS)
@@ -167,6 +181,7 @@ async function pulse($) {
 let lastBeat = 0
 let wasVisible = false
 let inApp = false
+let surfacesAt = 0
 
 // The live line, as the daemon left it. Redrawn only when it changes.
 async function refresh($) {

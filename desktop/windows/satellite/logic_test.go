@@ -33,8 +33,9 @@ func TestOnlyDesktopSessionsCount(t *testing.T) {
 	for _, s := range desktopSessions(dir, now, "cd") {
 		got[s.ID] = s
 	}
-	if len(got) != 2 || !got["desk"].Working || !got["done"].Lingering {
-		t.Fatalf("want desk working and done lingering, got %+v", got)
+	// A finished turn no longer lingers: the strip goes as the turn ends.
+	if len(got) != 1 || !got["desk"].Working {
+		t.Fatalf("want only desk, working, got %+v", got)
 	}
 }
 

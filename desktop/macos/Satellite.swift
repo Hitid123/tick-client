@@ -84,8 +84,9 @@ let DAEMON = inHome("daemon.mjs")
 let TICK_MS: Double = 3000
 let MAX_TURN_MS: Double = 10 * 60 * 1000
 let TICKS_MAX_BYTES = 2 * 1024 * 1024
-/// The strip stays this long after the turn ends, so it leaves rather than blinks.
-let LINGER_MS: Double = 4000
+/// How long the strip stays after the turn ends. None: the owner, 08.10, "as
+/// soon as it stops, it should go". It used to stay four seconds.
+let LINGER_MS: Double = 0
 
 func readJSON(_ path: String) -> [String: Any]? {
   guard let data = FileManager.default.contents(atPath: path) else { return nil }
@@ -537,6 +538,31 @@ final class Strip {
   }
 }
 
+// ------------------------------------------------------------------ the mod
+
+/// Whether the TICK plugin draws the line inside the Claude app, so the strip
+/// should not. Mainly: the plugin is enabled in Claude Code's own settings,
+/// which holds from the first instant of a turn. Until 08.10 only the mod's
+/// "I am here" signal was asked, which was stale between turns: the strip
+/// showed itself for seconds at the start of a turn, beside the band. The
+/// signal still counts, for a plugin loaded some other way.
+let CLAUDE_SETTINGS = ((ENV["CLAUDE_CONFIG_DIR"] ?? (NSHomeDirectory() as NSString).appendingPathComponent(".claude")) as NSString)
+  .appendingPathComponent("settings.json")
+var pluginCheckedAt: Double = 0
+var pluginEnabled = false
+
+func modDrawsInClaude() -> Bool {
+  let now = nowMs()
+  if now - pluginCheckedAt > 2000 {
+    pluginCheckedAt = now
+    let enabled = readJSON(CLAUDE_SETTINGS)?["enabledPlugins"] as? [String: Any] ?? [:]
+    pluginEnabled = enabled.contains { $0.key.hasPrefix("tick@") && ($0.value as? Bool) == true }
+  }
+  if pluginEnabled { return true }
+  if let ts = readJSON(inHome("state/mod-desktop.json"))?["ts"] as? Double, now - ts < 10_000 { return true }
+  return false
+}
+
 // -------------------------------------------------------------------- the log
 
 /// Why the strip is or is not on screen, one line per change, in
@@ -628,7 +654,7 @@ let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
   // The TICK mod draws the line inside the Claude app itself, above the
   // prompt, and says so every few seconds while it does. Then the strip steps
   // aside: one display, one impression.
-  if host.tag == CLAUDE.tag, let ts = readJSON(inHome("state/mod-desktop.json"))?["ts"] as? Double, nowMs() - ts < 10_000 {
+  if host.tag == CLAUDE.tag, modDrawsInClaude() {
     note("standing aside: the TICK mod draws the line in the Claude app"); offscreen(); return
   }
   ensureDaemon()

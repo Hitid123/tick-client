@@ -517,6 +517,7 @@ async function cycle(cfg, device, cycleNo) {
     const plan = fetchPlan(queue, cfg, fetchState, Date.now(),
       typeof onScreen?.expires_at === 'number' ? onScreen.expires_at : 0);
     if (plan.fetch) {
+      lastFetchAt = Date.now();
       const res = await request(cfg, 'GET', `/creatives?n=${plan.n}`, undefined, device.token);
       let gained = 0;
       if (res.ok && Array.isArray(res.json?.creatives)) {
@@ -591,16 +592,36 @@ async function main() {
     // A creative that expired a second into the cycle used to leave every
     // surface without one for the rest of it — up to half a minute of an empty
     // line, and the desktop strip, which appears with the turn, just late.
+    //
+    // And the network cycle comes early when the line is about to run out
+    // with nothing queued behind it: waiting out the half minute left a turn
+    // that began just then with no line for seconds (the owner, 08.10, "it
+    // should light up as soon as the AI starts thinking"). At most one early
+    // ask per ten seconds, so a server with nothing to give is not hammered.
     const until = Date.now() + cfg.cycle_ms;
     while (Date.now() < until) {
       await sleep(Math.min(1000, until - Date.now()));
       try { rotateLocally(); } catch { /* the next cycle rotates anyway */ }
+      const t = Date.now();
+      if (lineEndingSoon(t) && t - lastFetchAt > 10_000 && t - lastEarlyAt > 10_000) { lastEarlyAt = t; break; }
     }
   }
 }
 
 /** Between network cycles: move to the next queued creative once the current
  *  one expires. Disk only, never the network; written only when it changed. */
+let lastFetchAt = 0;
+let lastEarlyAt = 0;
+
+/** Nothing queued, and the line on screen is gone or about to go. */
+function lineEndingSoon(now) {
+  const queue = readJson(P.queue, []) ?? [];
+  if (Array.isArray(queue) && queue.length > 0) return false;
+  const cur = readJson(P.current, null);
+  const ends = cur && typeof cur.expires_at === 'number' ? cur.expires_at : 0;
+  return ends - now < 15_000;
+}
+
 function rotateLocally() {
   const queue = readJson(P.queue, null);
   if (!Array.isArray(queue) || queue.length === 0) return;

@@ -16,7 +16,7 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[] } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, { HOME: '/Users/dev' })
   const runs: any[] = []
@@ -24,6 +24,7 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null } = {}
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'abc' }))
+  on('session.surfaces', () => ({ value: surfaces }))
   on('settings.read', () => ({ value: statusLine ? { statusLine: { type: 'command', command: statusLine } } : {} }))
   on('fs.read', ($, e) => (line && e.path.endsWith('/.tick/state/current.json') ? { value: JSON.stringify(line) } : { deny: 'no such file' }))
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
@@ -94,6 +95,21 @@ test('a turn is counted as the other surfaces count it, and stops after the ling
   expect(ticks().length).toBe(settled)
   expect(await idle.find({ type: 'Link' })).toBeUndefined()
   await idle.unmount()
+})
+
+test('in the Claude app the strip is told to stand aside even before anything is drawn', async ($, on) => {
+  // The app attaches after session.start, which reports no surface yet.
+  const { clock, writes } = machine(on, { line: null })
+  await $.session.start({ surface: null, isInteractive: true, cwd: '/work' })
+  for (let i = 0; i < 12; i++) await clock.advance(1000)
+  expect(writes.some((w) => String(w.path).endsWith('/state/mod-desktop.json'))).toBe(true)
+})
+
+test('in a terminal the strip is never told to stand aside', async ($, on) => {
+  const { clock, writes } = machine(on, { line: null, surfaces: ['terminal'] })
+  await start($, 'terminal')
+  for (let i = 0; i < 12; i++) await clock.advance(1000)
+  expect(writes.some((w) => String(w.path).endsWith('/state/mod-desktop.json'))).toBe(false)
 })
 
 test('with nothing sold the band is empty and nothing is counted', async ($, on) => {

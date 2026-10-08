@@ -25,7 +25,7 @@ import (
 const (
 	tickMs        = 3000.0
 	maxTurnMs     = 10 * 60 * 1000.0
-	lingerMs      = 4000.0
+	lingerMs      = 0.0 // gone as the turn ends: the owner, 08.10
 	ticksMaxBytes = 2 * 1024 * 1024
 	settleMs      = 220.0
 	freshMs       = 2000.0
@@ -383,4 +383,21 @@ func (r Rect) contains(o Rect) bool {
 // a display. Hidden, covered or dragged away, it earns nothing.
 func fullyVisible(strip, window, monitor Rect) bool {
 	return window.contains(strip) && monitor.contains(strip)
+}
+
+// Whether the TICK plugin draws the line inside the Claude app, so the strip
+// should not: enabled in Claude Code's own settings, which holds from the
+// first instant of a turn, or its "I am here" signal fresh. See the Mac side.
+func modDrawsInClaude(p Paths, claudeSettings string, now float64) bool {
+	if enabled, ok := readJSON(claudeSettings)["enabledPlugins"].(map[string]any); ok {
+		for k, v := range enabled {
+			if strings.HasPrefix(k, "tick@") && v == true {
+				return true
+			}
+		}
+	}
+	if ts, ok := num(readJSON(filepath.Join(p.State, "mod-desktop.json")), "ts"); ok && now-ts < 10000 {
+		return true
+	}
+	return false
 }
