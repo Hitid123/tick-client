@@ -21,6 +21,7 @@ const P = {
   ticks: join(STATE, 'ticks.ndjson'),
   taking: join(STATE, 'ticks.taking.ndjson'),
   carry: join(STATE, 'carry.json'),
+  pending: join(STATE, 'pending.json'),
   outbox: join(STATE, 'outbox.json'),
   queue: join(STATE, 'queue.json'),
   current: join(STATE, 'current.json'),
@@ -48,6 +49,11 @@ const DEFAULTS = {
   request_timeout_ms: 5_000,
   request_attempts: 3,
   session_ttl_ms: 60 * 60_000,
+  // Impressions go to the server every five minutes, not every cycle: the
+  // same impressions in a tenth of the rows, and the database the server
+  // pays for grows ten times slower (09.10). They wait in pending.json, so a
+  // daemon that stops in between loses none of them.
+  batch_every_ms: 5 * 60_000,
   milestones_micros: [5e6, 10e6, 25e6, 50e6, 100e6],
   spinner: true,
 };
@@ -180,6 +186,27 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now()) {
 }
 
 /** Wrap items into the wire payload. Raw session_id never leaves the machine. */
+/**
+ * Items of one session and one campaign, added up across cycles: their counts
+ * and times summed, the earliest start and the latest end kept. Kept apart by
+ * session, because two windows at once are two items: the server checks each
+ * against its own time span.
+ */
+export function mergeItems(prev, items) {
+  const out = prev.map((i) => ({ ...i }));
+  for (const it of items) {
+    const same = out.find((o) => o.session_hash === it.session_hash && o.creative_id === it.creative_id);
+    if (!same) { out.push({ ...it }); continue; }
+    same.count += it.count;
+    same.active_ms += it.active_ms;
+    same.api_ms_delta += it.api_ms_delta;
+    same.first_ts = Math.min(same.first_ts, it.first_ts);
+    same.last_ts = Math.max(same.last_ts, it.last_ts);
+    if (it.model) same.model = it.model;
+  }
+  return out;
+}
+
 export function buildBatch(items, salt) {
   return {
     batch_id: randomUUID(),
@@ -482,7 +509,7 @@ function followServer(device, cfg) {
   device.tokens = tokens;
   device.api_base = cfg.api_base;
   writeJson(P.device, device);
-  for (const f of [P.queue, P.current, P.outbox, P.carry, P.balance]) {
+  for (const f of [P.queue, P.current, P.outbox, P.carry, P.pending, P.balance]) {
     try { unlinkSync(f); } catch { /* not there */ }
   }
   fetchState = { until: 0, step: 0 };
@@ -501,10 +528,18 @@ async function cycle(cfg, device, cycleNo) {
     const { items, carry } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now);
     writeJson(P.carry, carry);
     if (items.length) {
-      const outbox = readJson(P.outbox, []) ?? [];
-      outbox.push(buildBatch(items, device.salt));
-      writeJson(P.outbox, outbox);
+      const pending = readJson(P.pending, null) ?? { since: now, items: [] };
+      pending.items = mergeItems(pending.items ?? [], items);
+      writeJson(P.pending, pending);
     }
+  }
+  // Every few minutes what has gathered becomes one batch.
+  const pending = readJson(P.pending, null);
+  if (pending?.items?.length && now - (pending.since ?? 0) >= cfg.batch_every_ms) {
+    const outbox = readJson(P.outbox, []) ?? [];
+    outbox.push(buildBatch(pending.items, device.salt));
+    writeJson(P.outbox, outbox);
+    try { unlinkSync(P.pending); } catch { /* already gone */ }
   }
 
   if (!device.token) {
