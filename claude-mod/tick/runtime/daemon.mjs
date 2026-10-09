@@ -846,13 +846,26 @@ async function selfUpdate(cfg, device, now = Date.now()) {
     return false;
   }
 
+  // From one commit, not "main": GitHub's file host caches main for minutes,
+  // file by file, and a stale file would only fail its hash and wait hours.
+  let base = UPDATE_BASE;
+  if (!process.env.TICK_UPDATE_BASE) {
+    try {
+      const res = await fetch('https://api.github.com/repos/Hitid123/tick-client/commits/main', {
+        headers: { accept: 'application/vnd.github.sha', 'user-agent': 'tick' }, signal: AbortSignal.timeout(10_000),
+      });
+      const sha = (await res.text()).trim();
+      if (res.ok && /^[0-9a-f]{40}$/.test(sha)) base = `https://raw.githubusercontent.com/Hitid123/tick-client/${sha}`;
+    } catch { /* main, then */ }
+  }
+
   // Everything is downloaded and checked before anything is replaced.
   const dir = join(STATE, 'update');
   mkdirSync(dir, { recursive: true });
   const ready = [];
   try {
     for (const name of plan) {
-      const res = await fetch(`${UPDATE_BASE}/${name}`, { signal: AbortSignal.timeout(120_000) });
+      const res = await fetch(`${base}/${name}`, { signal: AbortSignal.timeout(120_000) });
       if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
       const body = Buffer.from(await res.arrayBuffer());
       if (body.length > MAX_FILE) throw new Error(`${name}: too large`);

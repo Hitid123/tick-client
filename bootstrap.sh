@@ -19,7 +19,17 @@
 set -eu
 
 REPO="${TICK_REPO:-Hitid123/tick-client}"
-REF="${TICK_REF:-main}"
+REF="${TICK_REF:-}"
+# GitHub's file host caches "main" for a few minutes, file by file: just after
+# a release one file can still be the old one while the checksums are new, and
+# the install stops, rightly, on the mismatch (10.10). So the release is pinned
+# to its commit first and every file comes from that one snapshot.
+if [ -z "$REF" ] && [ -z "${TICK_BASE:-}" ] && command -v curl >/dev/null 2>&1; then
+  SHA=$(curl -fsSL --proto '=https' --connect-timeout 10 --max-time 20 \
+    -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/main" 2>/dev/null || true)
+  if printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then REF=$SHA; fi
+fi
+REF="${REF:-main}"
 BASE="${TICK_BASE:-https://raw.githubusercontent.com/$REPO/$REF}"
 FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js install.sh uninstall.sh"
 # The desktop satellite is a Mac program; nobody else needs to download it.

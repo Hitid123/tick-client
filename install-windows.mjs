@@ -34,7 +34,22 @@ import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
 const REPO = process.env.TICK_REPO ?? 'Hitid123/tick-client';
-const BASE = process.env.TICK_BASE ?? `https://raw.githubusercontent.com/${REPO}/main`;
+let BASE = process.env.TICK_BASE ?? `https://raw.githubusercontent.com/${REPO}/main`;
+
+// GitHub's file host caches "main" for a few minutes, file by file: just after
+// a release one file can still be the old one while the checksums are new, and
+// the install stops, rightly, on the mismatch (10.10). So the release is pinned
+// to its commit first and every file comes from that one snapshot.
+async function pinRelease() {
+  if (process.env.TICK_BASE) return;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/commits/main`, {
+      headers: { accept: 'application/vnd.github.sha', 'user-agent': 'tick-install' }, signal: AbortSignal.timeout(15_000),
+    });
+    const sha = (await res.text()).trim();
+    if (res.ok && /^[0-9a-f]{40}$/.test(sha)) BASE = `https://raw.githubusercontent.com/${REPO}/${sha}`;
+  } catch { /* main, as before */ }
+}
 const HOME = process.env.TICK_HOME ?? join(homedir(), '.tick');
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const SETTINGS = join(CLAUDE_DIR, 'settings.json');
@@ -197,6 +212,7 @@ async function install() {
   const apiAt = process.argv.indexOf('--api-base');
   const apiBase = apiAt > 0 ? process.argv[apiAt + 1] : '';
 
+  await pinRelease();
   say(`fetching the client from ${BASE}`);
   const sums = new Map((await fetchBytes('SHA256SUMS')).toString('utf8')
     .split('\n').filter(Boolean).map((l) => l.trim().split(/\s+/)).map(([h, n]) => [n, h]));
