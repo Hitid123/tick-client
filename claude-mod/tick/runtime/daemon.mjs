@@ -856,7 +856,9 @@ async function selfUpdate(cfg, device, now = Date.now()) {
 
   // Not everyone at once. Until this machine's turn, it looks again then.
   const id = createHash('sha256').update(JSON.stringify(Object.entries(r.json.files).sort())).digest('hex').slice(0, 16);
-  const seenAt = st.release === id && st.seen_at ? st.seen_at : now;
+  // Counted from when this machine first had something to update: a release
+  // that replaces one it was still waiting for does not start the wait over.
+  const seenAt = st.seen_at && (st.release === id || (st.waiting?.length ?? 0) > 0) ? st.seen_at : now;
   const due = seenAt + staggerOf(device.nonce);
   if (now < due) {
     writeJson(P.update, { ...st, release: id, seen_at: seenAt, checked_at: due - cfg.update_every_ms, waiting: plan });
