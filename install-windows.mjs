@@ -262,6 +262,14 @@ async function install() {
     try {
       execFileSync('claude', ['plugin', 'install', 'tick@tick'], { stdio: 'ignore', shell: true, timeout: 120_000 });
       plugin = true;
+      // Claude Code updates plugins from a marketplace like ours only when
+      // that marketplace has auto-update on, off by default for all but
+      // Anthropic's own. On here, so new versions arrive by themselves.
+      const now = readJson(SETTINGS, null);
+      if (now?.extraKnownMarketplaces?.tick && now.extraKnownMarketplaces.tick.autoUpdate !== true) {
+        now.extraKnownMarketplaces.tick.autoUpdate = true;
+        writeFileSync(SETTINGS, `${JSON.stringify(now, null, 2)}\n`);
+      }
     } catch {
       say('Claude Code was not found, so its plugin is not installed; the strip covers the Claude app');
     }

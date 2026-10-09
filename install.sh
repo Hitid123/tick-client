@@ -353,6 +353,13 @@ if [ "${TICK_NO_PLUGIN:-0}" != 1 ] && [ "$HOME" = "$REAL_HOME" ] && command -v c
   claude plugin marketplace add Hitid123/tick-client >/dev/null 2>&1 || true
   if claude plugin install tick@tick >/dev/null 2>&1; then
     PLUGIN_ADDED=1
+    # Claude Code updates plugins from a marketplace like ours only when that
+    # marketplace has auto-update on, and it is off by default for all but
+    # Anthropic's own. On here, so new versions arrive by themselves.
+    if jq -e '.extraKnownMarketplaces.tick' "$SETTINGS" >/dev/null 2>&1; then
+      tmp="$SETTINGS.tmp.$$"
+      jq '.extraKnownMarketplaces.tick.autoUpdate = true' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+    fi
   else
     printf 'tick: the Claude Code plugin did not install; the strip covers the Claude app instead\n'
   fi

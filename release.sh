@@ -20,5 +20,18 @@ else
   exit 1
 fi
 
-printf 'wrote SHA256SUMS:\n\n'
+# The same list, for the server: running clients update themselves to what
+# the server names (selfUpdate in daemon.mjs), so a release is live once the
+# server is deployed AND the public repository has the files.
+node -e '
+const fs = require("fs");
+const files = {};
+for (const line of fs.readFileSync("SHA256SUMS", "utf8").split("\n")) {
+  const m = /^([0-9a-f]{64})\s+\*?(\S+)$/.exec(line.trim());
+  if (m) files[m[2]] = m[1];
+}
+fs.writeFileSync("../server/lib/client-release.json", JSON.stringify({ files }, null, 2) + "\n");
+'
+
+printf 'wrote SHA256SUMS and server/lib/client-release.json:\n\n'
 cat SHA256SUMS

@@ -16,7 +16,7 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01, dashboard = {} as Record<string, unknown> } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01, dashboard = {} as Record<string, unknown>, marketplace = null as null | Record<string, unknown> } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, env)
   const runs: any[] = []
@@ -28,9 +28,19 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfa
   // The session's cost, as /cost totals it: rising while the model answers.
   let usd = 0
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [], cost: { usd: (usd += costStep) } } }))
-  on('settings.read', () => ({ value: statusLine ? { statusLine: { type: 'command', command: statusLine } } : {} }))
+  on('settings.read', () => ({ value: {
+    ...(statusLine ? { statusLine: { type: 'command', command: statusLine } } : {}),
+    ...(marketplace ? { extraKnownMarketplaces: { tick: marketplace } } : {}),
+  } }))
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
+  // The store that outlives sessions.
+  const store = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => { store.set(e.key, e.value); return { value: undefined } })
   on('fs.read', ($, e) => (line && e.path.endsWith('/.tick/state/current.json') ? { value: JSON.stringify(line) } : { deny: 'no such file' }))
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
+  on('fs.exists', () => ({ value: true }))
   // `daemon.mjs --dashboard` answers with one line of JSON.
   on('process.run', ($, e) => {
     runs.push(e)
@@ -43,7 +53,7 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfa
   const ticks = () => runs
     .filter((r) => String(r.argv?.[3] ?? '').endsWith('/state/ticks.ndjson'))
     .flatMap((r) => String(r.init?.stdin ?? '').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)))
-  return { clock, runs, writes, ticks }
+  return { clock, runs, writes, ticks, toasts }
 }
 
 async function start($, surface: 'terminal' | 'desktop') {
@@ -194,4 +204,25 @@ test('/tick-dashboard where no browser opens gives the address to open by hand',
   const r = await $.command.run({ command: 'tick-dashboard' })
   expect(r.text).toContain('https://gettick.dev/dashboard#c=ab')
   expect(r.text).toContain('five minutes')
+})
+
+test('installed from our marketplace with auto-update off, it says once how to turn it on', async ($, on) => {
+  const { toasts, clock } = machine(on, { marketplace: { source: { source: 'github', repo: 'Hitid123/tick-client' } } })
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('/plugin → Marketplaces → tick')
+  // Not again within the week.
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  const r = await $.command.run({ command: 'tick' })
+  expect(r.text).toContain('the daemon updates itself')
+})
+
+test('with auto-update on, nothing is said', async ($, on) => {
+  const { toasts, clock } = machine(on, { marketplace: { source: { source: 'github', repo: 'Hitid123/tick-client' }, autoUpdate: true } })
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(0)
 })

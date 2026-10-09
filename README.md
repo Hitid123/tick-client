@@ -107,6 +107,27 @@ Everything above is enforced by a test that runs the real scripts, captures the 
 payload, and fails if any forbidden string appears in it
 ([`tests/privacy.test.mjs`](../tests/privacy.test.mjs)). It is part of CI.
 
+## Updates
+
+TICK keeps itself current, so you never have to reinstall it:
+
+- **The client in `~/.tick`** (the daemon, the status line, the hooks, the desktop strip)
+  updates itself. Every few hours, while it runs, the daemon asks our server which files the
+  current release is made of (a name and a SHA-256 each), downloads only the ones that
+  differ from this repository, and keeps a file only if its hash is the one the server named.
+  Forging an update would take both this repository and our server. Nothing about you is
+  sent: these are plain downloads. Each file is checked before it goes live, swapped in
+  whole, and the previous one is kept in `~/.tick/state/previous`. Not every machine updates
+  at once: each waits its own few hours after a release, so a bad one reaches few. Your
+  settings files are never touched by an update. To stay on what you have, set
+  `"auto_update": false` in `~/.tick/config.json`.
+- **The Claude Code plugin** updates when its marketplace has auto-update on. Our installers
+  turn it on; if you installed the plugin yourself, run `/plugin` → **Marketplaces** →
+  **tick** → **Enable auto-update** (Claude Code leaves it off for marketplaces that are not
+  Anthropic's). The plugin reminds you once a week while it is off.
+- **The VS Code / Cursor extension** updates through the marketplace, as every extension
+  does.
+
 ## The desktop satellite (macOS)
 
 The Claude desktop app has no status line to draw into, so on a Mac the installer adds a

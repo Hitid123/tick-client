@@ -229,6 +229,10 @@ function ensureHome(context, log) {
     if (!fs.existsSync(STATE)) fs.mkdirSync(STATE, { recursive: true });
 
     const ours = readJson(P.shipped, {}) || {};
+    // Files the daemon's own updater put in place (daemon.mjs, selfUpdate):
+    // those follow the latest release, which this extension's copies, fixed at
+    // whenever it was packaged, may be behind. Left alone while still theirs.
+    const updated = readJson(path.join(STATE, 'updated.json'), {}) || {};
     let changed = false;
 
     // hook.mjs is ours outright: this extension is the only thing that installs
@@ -256,6 +260,7 @@ function ensureHome(context, log) {
       }
 
       const onDisk = sha256(fs.readFileSync(dest));
+      if (updated[name] === onDisk && onDisk !== shippedHash) continue;
       if (onDisk === shippedHash) {
         if (ours[name] !== shippedHash) { ours[name] = shippedHash; changed = true; }
         continue;

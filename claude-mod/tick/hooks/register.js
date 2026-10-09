@@ -60,6 +60,7 @@ export function register(on) {
     $.clock.every(250, () => (working && !creative ? refresh($) : undefined))
     $.clock.every(TICK_MS, () => count($))
     $.clock.every(30000, () => ensureDaemon($))
+    await suggestAutoUpdate($)
     return next(e)
   })
 
@@ -124,6 +125,7 @@ export function register(on) {
         `terminal: ${ourStatusLine ? 'the status line shows it, so the band stays empty' : 'the band shows it'}`,
         `home: ${home}${bundled ? '' : ' (the plugin\'s own daemon copy is missing: reinstall the plugin)'}`,
         noNode ? 'Node.js was not found: install it from nodejs.org and start a new session' : `daemon: started with ${node}`,
+        `updates: the daemon updates itself${autoUpdate ? '; this plugin too' : '; this plugin only when you turn on auto-update in /plugin → Marketplaces → tick'}`,
       ].join('\n'),
     }
   })
@@ -147,6 +149,33 @@ export function register(on) {
 }
 
 // ------------------------------------------------------------------ helpers
+
+// Claude Code updates a plugin from a marketplace like ours only when that
+// marketplace has auto-update on, and it is off by default for every
+// marketplace that is not Anthropic's. A plugin cannot turn it on itself, so
+// where it is off, the person is told how, in one line, at most once a week.
+// The daemon, which does the real work, updates itself either way.
+let autoUpdate = false
+async function suggestAutoUpdate($) {
+  try {
+    const settings = await $.settings.read()
+    const entry = settings?.extraKnownMarketplaces?.tick
+    let known = null
+    try {
+      const user = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
+      const dir = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${user}/.claude`).replace(/\\/g, '/')
+      known = JSON.parse(await $.fs.read(`${dir}/plugins/known_marketplaces.json`))?.tick ?? null
+    } catch { known = null }
+    if (!entry && !known) { autoUpdate = true; return } // not installed from our marketplace: nothing to suggest
+    autoUpdate = typeof entry?.autoUpdate === 'boolean' ? entry.autoUpdate : known?.autoUpdate === true
+    if (autoUpdate) return
+    const now = await $.clock.now()
+    const last = await $.store.get('autoUpdateHint')
+    if (typeof last === 'number' && now - last < 7 * 24 * 3600 * 1000) return
+    await $.store.set('autoUpdateHint', now)
+    $.ui.toast('TICK: to get new versions by itself, turn on auto-update in /plugin → Marketplaces → tick', { timeoutMs: 12000 })
+  } catch { /* a hint, never a failure */ }
+}
 
 async function setUp($) {
   const explicit = await $.env.get('TICK_HOME')

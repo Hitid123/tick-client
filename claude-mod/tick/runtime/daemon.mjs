@@ -8,7 +8,7 @@
 // No dependencies. Node 20+.
 
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync, statSync, realpathSync, chmodSync, copyFileSync } from 'node:fs';
 import { homedir, platform, arch } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -30,6 +30,8 @@ const P = {
   device: join(STATE, 'device.json'),
   pid: join(STATE, 'daemon.pid'),
   spinner: join(STATE, 'spinner.json'),
+  update: join(STATE, 'update.json'),
+  updated: join(STATE, 'updated.json'),
 };
 
 const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
@@ -56,6 +58,10 @@ const DEFAULTS = {
   batch_every_ms: 5 * 60_000,
   milestones_micros: [5e6, 10e6, 25e6, 50e6, 100e6],
   spinner: true,
+  // Updates install themselves (see selfUpdate). false keeps this machine on
+  // what it has; the next install, or turning it back on, catches it up.
+  auto_update: true,
+  update_every_ms: 3 * 60 * 60_000,
 };
 
 // ---------------------------------------------------------------- utilities
@@ -633,6 +639,8 @@ async function main() {
       const before = existsSync(P.ticks) ? statSync(P.ticks).size : 0;
       if (before > 0) lastTickSeen = Date.now();
       await cycle(cfg, device, n);
+      // A daemon that replaced itself makes way for the new one.
+      if (await selfUpdate(cfg, device)) process.exit(0);
     } catch (e) {
       process.stderr.write(`[tick] cycle error: ${e?.stack ?? e}\n`);
     }
@@ -747,6 +755,161 @@ async function openDashboard() {
   // The address goes out only when no browser could take it: then it is the
   // one way in, and its code is spent at first use or in five minutes anyway.
   process.stdout.write(JSON.stringify({ opened, signed_in: signedIn, registered: Boolean(device?.token), ...(opened ? {} : { url }) }) + '\n');
+}
+
+// ---------------------------------------------------------------- updates
+
+/**
+ * Updates install themselves, so nobody has to remember to (the owner,
+ * 09.10: "people will get fed up installing updates every time").
+ *
+ * Every few hours, while it runs, the daemon asks our server which files the
+ * current release is made of: a name and a SHA-256 each, from the server's own
+ * deploy. It downloads only the ones that differ from what is installed, from
+ * the public repository, and keeps each only if its hash is the one the server
+ * named. So a forged update needs both the GitHub repository and our server;
+ * either alone gets nowhere.
+ *
+ *   - Only what is already installed is replaced, in place, with the same
+ *     paths everything points at. Settings files are never touched.
+ *   - Each file is checked before it goes live (node --check, sh -n), swapped
+ *     in with a rename, and the old one kept in state/previous.
+ *   - Not everyone at once: each machine waits its own few hours after a
+ *     release first appears, so a bad one can be withdrawn while it reaches
+ *     few. Withdrawing is just publishing the old files again.
+ *   - The server can pause updates for everyone (CLIENT_UPDATES=off there).
+ *   - A daemon that replaced itself exits; whatever started it starts the new
+ *     one within seconds, as it does after any exit.
+ */
+const UPDATE_BASE = process.env.TICK_UPDATE_BASE || 'https://raw.githubusercontent.com/Hitid123/tick-client/main';
+const STAGGER_MS = 3 * 60 * 60_000;
+const MAX_FILE = 30 * 1024 * 1024;
+
+/** The files a release is made of, where each lives once installed, and how it is checked first. */
+export function installedFiles(home, os = platform(), running = process.argv[1]) {
+  const at = (name) => join(home, name);
+  const list = [
+    // The daemon is always ours to keep current: where only the Claude Code
+    // plugin is installed, it runs the plugin's copy until this one exists.
+    { name: 'daemon.mjs', dest: at('daemon.mjs'), always: true, check: 'node', mode: 0o755, from: existsSync(at('daemon.mjs')) ? at('daemon.mjs') : running },
+    { name: 'hook.mjs', dest: at('hook.mjs'), check: 'node' },
+    { name: 'opencode-plugin.js', dest: at('opencode-plugin.js'), check: 'node' },
+    { name: 'install-windows.mjs', dest: at('install-windows.mjs'), check: 'node' },
+    { name: 'statusline.sh', dest: at('statusline.sh'), check: 'sh', mode: 0o755 },
+    { name: 'nojq.sh', dest: at('nojq.sh'), check: 'sh', mode: 0o755 },
+    { name: 'uninstall.sh', dest: at('uninstall.sh'), check: 'sh', mode: 0o755 },
+  ];
+  if (os === 'darwin') list.push({ name: 'tick-satellite-macos', dest: join(home, 'TICK.app', 'Contents', 'MacOS', 'TICK'), kind: 'mac-app', mode: 0o755 });
+  if (os === 'win32') list.push({ name: 'tick-satellite-windows.exe', dest: at('tick-satellite.exe'), kind: 'win-exe' });
+  return list.filter((f) => f.always || existsSync(f.dest)).map((f) => ({ from: f.dest, kind: 'file', ...f }));
+}
+
+const sha256Of = (path) => { try { return createHash('sha256').update(readFileSync(path)).digest('hex'); } catch { return null; } };
+
+/** Which installed files differ from the release. Pure, for the tests. */
+export function planUpdate(release, local) {
+  if (!release || typeof release !== 'object') return [];
+  return local.filter((f) => /^[0-9a-f]{64}$/.test(String(release[f.name] ?? '')) && f.hash !== release[f.name]).map((f) => f.name);
+}
+
+/** This machine's own wait after a release first appears: 0 to 3 hours, the same every time. */
+export function staggerOf(nonce) {
+  return parseInt(createHash('sha256').update(`update:${nonce}`).digest('hex').slice(0, 8), 16) % STAGGER_MS;
+}
+
+const isLocal = (u) => { try { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(u).hostname); } catch { return false; } };
+
+/** Returns true when the daemon replaced itself and should exit. */
+async function selfUpdate(cfg, device, now = Date.now()) {
+  if (!cfg.auto_update) return false;
+  // A daemon pointed at a local server is a developer's or a test's: it is
+  // not updated from the public repository behind their back.
+  if (isLocal(cfg.api_base) && !process.env.TICK_UPDATE_BASE) return false;
+  const st = readJson(P.update, {}) ?? {};
+  if (now - (st.checked_at ?? 0) < cfg.update_every_ms) return false;
+  const save = (more) => writeJson(P.update, { ...st, checked_at: now, ...more });
+
+  const r = await request({ ...cfg, request_attempts: 1, request_timeout_ms: 10_000 }, 'GET', '/client/release');
+  if (!r.ok || !r.json || typeof r.json.files !== 'object') { save({ error: `release: ${r.status || r.error}` }); return false; }
+  if (r.json.paused) { save({ error: null, paused: true }); return false; }
+
+  const files = installedFiles(HOME).map((f) => ({ ...f, hash: sha256Of(f.from) }));
+  const plan = planUpdate(r.json.files, files);
+  if (plan.length === 0) { save({ error: null, paused: false, current: true }); return false; }
+
+  // Not everyone at once. Until this machine's turn, it looks again then.
+  const id = createHash('sha256').update(JSON.stringify(Object.entries(r.json.files).sort())).digest('hex').slice(0, 16);
+  const seenAt = st.release === id && st.seen_at ? st.seen_at : now;
+  const due = seenAt + staggerOf(device.nonce);
+  if (now < due) {
+    writeJson(P.update, { ...st, release: id, seen_at: seenAt, checked_at: due - cfg.update_every_ms, waiting: plan });
+    return false;
+  }
+
+  // Everything is downloaded and checked before anything is replaced.
+  const dir = join(STATE, 'update');
+  mkdirSync(dir, { recursive: true });
+  const ready = [];
+  try {
+    for (const name of plan) {
+      const res = await fetch(`${UPDATE_BASE}/${name}`, { signal: AbortSignal.timeout(120_000) });
+      if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+      const body = Buffer.from(await res.arrayBuffer());
+      if (body.length > MAX_FILE) throw new Error(`${name}: too large`);
+      if (createHash('sha256').update(body).digest('hex') !== r.json.files[name]) throw new Error(`${name}: not the file the release names`);
+      // Under its own name, in a folder of its own: node tells a module by its extension.
+      const tmp = join(dir, name);
+      writeFileSync(tmp, body);
+      const f = files.find((x) => x.name === name);
+      if (f.check === 'node') execFileSync(process.execPath, ['--check', tmp], { stdio: 'ignore', timeout: 10_000 });
+      if (f.check === 'sh' && platform() !== 'win32') execFileSync('sh', ['-n', tmp], { stdio: 'ignore', timeout: 10_000 });
+      ready.push({ ...f, tmp, hash: r.json.files[name] });
+    }
+  } catch (e) {
+    save({ release: id, seen_at: seenAt, error: String(e?.message ?? e) });
+    return false;
+  }
+
+  const prev = join(STATE, 'previous');
+  mkdirSync(prev, { recursive: true });
+  const done = readJson(P.updated, {}) ?? {};
+  for (const f of ready) {
+    try { if (existsSync(f.dest)) copyFileSync(f.dest, join(prev, f.name)); } catch { /* a backup is a convenience */ }
+    if (f.kind === 'win-exe') {
+      // A running program cannot be overwritten on Windows, but it can be renamed.
+      try { unlinkSync(`${f.dest}.old`); } catch { /* still running, or not there */ }
+      try { renameSync(f.dest, `${f.dest}.old`); } catch { /* not running */ }
+    }
+    renameSync(f.tmp, f.dest);
+    if (f.mode && platform() !== 'win32') { try { chmodSync(f.dest, f.mode); } catch { /* keeps its mode */ } }
+    done[f.name] = f.hash;
+    if (f.kind === 'mac-app') restartMacSatellite(f.dest, f.hash);
+    if (f.kind === 'win-exe') restartWindowsSatellite(f.dest);
+  }
+  writeJson(P.updated, done);
+  save({ release: id, seen_at: seenAt, error: null, current: true, applied_at: now, applied: ready.map((f) => f.name), waiting: [] });
+  return ready.some((f) => f.name === 'daemon.mjs');
+}
+
+/** The Mac strip: its app bundle marked the way install.sh marks it, signed again, restarted by launchd. */
+function restartMacSatellite(binary, hash) {
+  const app = join(binary, '..', '..', '..');
+  const icns = sha256Of(join(app, 'Contents', 'Resources', 'TICK.icns'));
+  try { writeFileSync(join(app, 'Contents', 'Resources', 'source'), `bundle-3 ${hash} ${icns ?? ''}`.trim() + '\n'); } catch { /* install.sh redoes it */ }
+  const quiet = (cmd, args) => { try { execFileSync(cmd, args, { stdio: 'ignore', timeout: 20_000 }); } catch { /* best effort */ } };
+  quiet('codesign', ['--force', '--sign', '-', '--identifier', 'dev.gettick.satellite', app]);
+  // Only a real login session's job; a test's sandbox has none.
+  const plist = join(homedir(), 'Library', 'LaunchAgents', 'dev.gettick.satellite.plist');
+  if (process.env.TICK_NO_LAUNCHD !== '1' && existsSync(plist)) {
+    quiet('launchctl', ['kickstart', '-k', `gui/${process.getuid?.() ?? ''}/dev.gettick.satellite`]);
+  }
+}
+
+/** The Windows strip: the old one stopped, the new one started, as the installer does. */
+function restartWindowsSatellite(exe) {
+  if (process.env.TICK_NO_LAUNCHD === '1') return;
+  try { execFileSync('taskkill', ['/IM', 'tick-satellite.exe', '/F'], { stdio: 'ignore', timeout: 10_000 }); } catch { /* not running */ }
+  try { spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch { /* starts at the next login */ }
 }
 
 if (invokedDirectly()) {
