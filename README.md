@@ -83,7 +83,12 @@ This is the whole reason to pick us, so here it is without hedging.
 | Git branches and remotes | A salted SHA-256 hash of the session id |
 | Environment variables, API keys, tokens | A device fingerprint |
 | Shell history | Your country, derived from the IP of the request |
-| **Your raw `session_id`** | |
+| **Your raw `session_id`** | A one-way code of your IP address (below) |
+
+**Your IP address is kept only as a code.** The server turns the address of each request
+into a keyed one-way code and keeps that, against fraud, together with the name your client
+gives itself (`node` for ours). The address itself is never stored, and the code cannot be
+turned back into it.
 
 **Clicks are the one exception, and only if you make one.** When a creative has a
 destination, the line is a terminal hyperlink. Nothing is sent while it sits there. If you
