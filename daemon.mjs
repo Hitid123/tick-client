@@ -806,6 +806,23 @@ export function installedFiles(home, os = platform(), running = process.argv[1])
 
 const sha256Of = (path) => { try { return createHash('sha256').update(readFileSync(path)).digest('hex'); } catch { return null; } };
 
+/**
+ * What an installed file is, as a release names it. The Mac strip is signed
+ * on the machine when it is put in place (codesign, by install.sh and here),
+ * which changes its bytes, so it is known by the release hash its bundle was
+ * marked with instead (Contents/Resources/source). Read by its bytes, it never
+ * matched, and it was replaced every few hours (found 10.10).
+ */
+export function localHash(f) {
+  if (f.kind === 'mac-app') {
+    try {
+      const m = /^bundle-\d+ ([0-9a-f]{64})/.exec(readFileSync(join(f.dest, '..', '..', 'Resources', 'source'), 'utf8'));
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+  return sha256Of(f.from);
+}
+
 /** Which installed files differ from the release. Pure, for the tests. */
 export function planUpdate(release, local) {
   if (!release || typeof release !== 'object') return [];
@@ -833,7 +850,7 @@ async function selfUpdate(cfg, device, now = Date.now()) {
   if (!r.ok || !r.json || typeof r.json.files !== 'object') { save({ error: `release: ${r.status || r.error}` }); return false; }
   if (r.json.paused) { save({ error: null, paused: true }); return false; }
 
-  const files = installedFiles(HOME).map((f) => ({ ...f, hash: sha256Of(f.from) }));
+  const files = installedFiles(HOME).map((f) => ({ ...f, hash: localHash(f) }));
   const plan = planUpdate(r.json.files, files);
   if (plan.length === 0) { save({ error: null, paused: false, current: true }); return false; }
 
