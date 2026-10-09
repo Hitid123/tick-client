@@ -16,7 +16,7 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01 } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01, dashboard = {} as Record<string, unknown> } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, env)
   const runs: any[] = []
@@ -31,7 +31,11 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfa
   on('settings.read', () => ({ value: statusLine ? { statusLine: { type: 'command', command: statusLine } } : {} }))
   on('fs.read', ($, e) => (line && e.path.endsWith('/.tick/state/current.json') ? { value: JSON.stringify(line) } : { deny: 'no such file' }))
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
-  on('process.run', ($, e) => { runs.push(e); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  // `daemon.mjs --dashboard` answers with one line of JSON.
+  on('process.run', ($, e) => {
+    runs.push(e)
+    return { value: { exitCode: 0, stdout: e.argv.includes('--dashboard') ? JSON.stringify(dashboard) : '', stderr: '' } }
+  })
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
@@ -170,4 +174,24 @@ test('with nothing sold the band is empty and nothing is counted', async ($, on)
   for (let i = 0; i < 8; i++) await clock.advance(1000)
   expect(await ui.find({ type: 'Link' })).toBeUndefined()
   expect(ticks().length).toBe(0)
+})
+
+test('/tick-dashboard opens the cabinet through the daemon, with the token traded for a one-time code', async ($, on) => {
+  const { runs } = machine(on, { dashboard: { opened: true, signed_in: true, registered: true } })
+  await start($, 'terminal')
+  const r = await $.command.run({ command: 'tick-dashboard' })
+  const run = runs.find((x) => x.argv.includes('--dashboard'))
+  expect(String(run.argv[1]).endsWith('/runtime/daemon.mjs')).toBe(true)
+  expect(run.init.env.TICK_HOME).toBe('/Users/dev/.tick')
+  // The token never reaches the command line or the transcript.
+  expect(JSON.stringify(run.argv)).not.toContain('token')
+  expect(r.text).toContain('signed in as this computer')
+})
+
+test('/tick-dashboard where no browser opens gives the address to open by hand', async ($, on) => {
+  machine(on, { dashboard: { opened: false, signed_in: true, registered: true, url: 'https://gettick.dev/dashboard#c=ab' } })
+  await start($, 'terminal')
+  const r = await $.command.run({ command: 'tick-dashboard' })
+  expect(r.text).toContain('https://gettick.dev/dashboard#c=ab')
+  expect(r.text).toContain('five minutes')
 })

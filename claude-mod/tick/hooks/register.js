@@ -52,6 +52,7 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     inApp = e.surface === 'desktop'
     await $.command.register({ name: 'tick', description: 'TICK: what the sponsored line is doing' })
+    await $.command.register({ name: 'tick-dashboard', description: 'TICK: open your earnings and payouts in the browser' })
     await setUp($)
     $.clock.every(1000, () => pulse($))
     // While a turn runs and nothing is on screen yet, look for a line four
@@ -125,6 +126,23 @@ export function register(on) {
         noNode ? 'Node.js was not found: install it from nodejs.org and start a new session' : `daemon: started with ${node}`,
       ].join('\n'),
     }
+  })
+
+  // The cabinet, opened in the browser as this computer. The plugin's own
+  // daemon copy does it, so an older ~/.tick/daemon.mjs is no obstacle: it
+  // trades the device token for a one-time code and opens the page with that.
+  on('command.run', { command: 'tick-dashboard' }, async ($) => {
+    if (noNode) return { text: 'Node.js was not found: install it from nodejs.org and start a new session.' }
+    let r
+    try {
+      const run = await $.process.run([node, `${$.plugin.root}/runtime/daemon.mjs`, '--dashboard'], { env: { TICK_HOME: home }, timeoutMs: 20000 })
+      r = JSON.parse(String(run.stdout).trim().split('\n').pop() || '{}')
+    } catch { r = null }
+    if (!r) return { text: 'The dashboard could not be opened: open https://gettick.dev/dashboard and sign in.' }
+    if (!r.opened) return { text: `No browser could be opened here. Open this address yourself, within five minutes:\n${r.url}` }
+    if (!r.registered) return { text: 'Opened the dashboard. This computer has not registered yet: it does so the first time Claude works with TICK on, so for now sign in there.' }
+    if (!r.signed_in) return { text: 'Opened the dashboard, but the server did not answer for this computer: sign in there, or try again in a minute.' }
+    return { text: 'Opened your TICK dashboard in the browser, signed in as this computer.' }
   })
 }
 

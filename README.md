@@ -179,6 +179,19 @@ is actually working**. Time is discarded when:
 That last rule is the point. An open, forgotten terminal earns nothing. Faking impressions
 means genuinely burning tokens, which costs more than it pays.
 
+## Your earnings and payouts
+
+- In Claude Code: type `/tick-dashboard`.
+- In VS Code or Cursor: run **TICK: Open dashboard**.
+- From a terminal: `node ~/.tick/daemon.mjs --dashboard`.
+
+Each opens https://gettick.dev/dashboard, signed in as this computer. Your
+device token never goes into the address: the page opens with a code that
+works once, within five minutes. There you see what you have earned and ask
+for a payout from $5. You can also make it an account (GitHub, Google or an
+email), to see it from any browser and add your other computers to one
+balance.
+
 ## Your own line
 
 Unsold inventory goes to you. Put this in `~/.tick/config.json`:

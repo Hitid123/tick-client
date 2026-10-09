@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkS
 import { homedir, platform, arch } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const HOME = process.env.TICK_HOME || join(homedir(), '.tick');
 const STATE = join(HOME, 'state');
@@ -698,6 +698,58 @@ function invokedDirectly() {
   }
 }
 
+// -------------------------------------------------------------- the cabinet
+
+/**
+ * The site behind an API address: ours, or a local dev server. Anything else
+ * that does not parse falls back to ours rather than to nothing.
+ */
+export function siteOf(apiBase) {
+  try {
+    const u = new URL(String(apiBase || ''));
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && local)) return u.origin;
+  } catch { /* not a URL */ }
+  return 'https://gettick.dev';
+}
+
+/** How each system opens an address in the default browser, as an argv: no shell. */
+export function browserCommand(url, os = platform()) {
+  if (os === 'darwin') return ['open', url];
+  if (os === 'win32') return ['rundll32', 'url.dll,FileProtocolHandler', url];
+  return ['xdg-open', url];
+}
+
+/**
+ * `node daemon.mjs --dashboard`: opens this computer's cabinet, signed in as
+ * this computer. The device token never goes into the address — an address
+ * stays in browser history, and a synced history travels — so the server
+ * trades it for a code good for one use within five minutes (#c=…, after the
+ * #, which a browser never sends). Prints one line of JSON for whoever ran it.
+ */
+async function openDashboard() {
+  const cfg = loadConfig();
+  const device = readJson(P.device, null);
+  let url = `${siteOf(cfg.api_base)}/dashboard`;
+  let signedIn = false;
+  if (device?.token && (!device.api_base || device.api_base === cfg.api_base)) {
+    const r = await request({ ...cfg, request_attempts: 2 }, 'POST', '/account/handoff', {}, device.token);
+    if (r.ok && /^[0-9a-f]{48}$/.test(String(r.json?.code))) { url += `#c=${r.json.code}`; signedIn = true; }
+  }
+  const [cmd, ...args] = browserCommand(url);
+  const opened = await new Promise((done) => {
+    try {
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.once('error', () => done(false));
+      child.once('spawn', () => { child.unref(); done(true); });
+    } catch { done(false); }
+  });
+  // The address goes out only when no browser could take it: then it is the
+  // one way in, and its code is spent at first use or in five minutes anyway.
+  process.stdout.write(JSON.stringify({ opened, signed_in: signedIn, registered: Boolean(device?.token), ...(opened ? {} : { url }) }) + '\n');
+}
+
 if (invokedDirectly()) {
-  main();
+  if (process.argv.includes('--dashboard')) openDashboard();
+  else main();
 }

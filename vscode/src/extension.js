@@ -939,16 +939,18 @@ function showStatus(channel) {
 }
 
 /**
- * Payouts are requested in the dashboard, and the dashboard knows a publisher
- * by the device token the daemon was issued. In a terminal that token is one
- * `jq` away; on Windows, where this extension is the whole client, nobody would
- * find it, and a balance nobody can withdraw is not earnings. So the token goes
- * on the clipboard and the page opens. Never into the URL: a token in a URL ends
- * up in browser history, proxy logs and screenshots.
+ * Payouts are requested in the dashboard, and the dashboard knows a computer
+ * by the device token the daemon was issued. The token itself never goes into
+ * the address, where browser history keeps it and a synced history carries it
+ * off: the server trades it for a code good for one use within five minutes,
+ * and the page opens with that (#c=…, after the #, which a browser never
+ * sends). A server too old to trade it, or no network, gets the way before
+ * 0.1.3: the token on the clipboard, to paste.
  */
 async function openDashboard() {
   const config = readJson(P.config, {}) || {};
-  const url = core.dashboardUrl(config.api_base);
+  const apiBase = typeof config.api_base === 'string' && config.api_base ? config.api_base : 'https://gettick.dev/api/v1';
+  const url = core.dashboardUrl(apiBase);
   const device = readJson(P.device, null);
   const token = device && typeof device.token === 'string' ? device.token : '';
   if (!/^[0-9a-f]{32,128}$/.test(token)) {
@@ -957,10 +959,26 @@ async function openDashboard() {
     );
     return;
   }
+  // A token is good on the server that issued it, and nowhere else.
+  if (!device.api_base || device.api_base === apiBase) {
+    try {
+      const res = await fetch(`${apiBase}/account/handoff`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(8000),
+      });
+      const json = await res.json();
+      if (res.ok && /^[0-9a-f]{48}$/.test(String(json.code))) {
+        vscode.env.openExternal(vscode.Uri.parse(`${url}#c=${json.code}`));
+        return;
+      }
+    } catch { /* the clipboard, below */ }
+  }
   await vscode.env.clipboard.writeText(token);
   vscode.env.openExternal(vscode.Uri.parse(url));
   vscode.window.showInformationMessage(
-    'Your device token is on the clipboard. Paste it into the dashboard to see your earnings and request a payout. Treat it like a password.',
+    'Your device token is on the clipboard. On the dashboard choose "I have a device token" and paste it. Treat it like a password.',
   );
 }
 

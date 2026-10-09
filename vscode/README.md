@@ -58,7 +58,7 @@ its model is running.
 |---|---|
 | `TICK: Set up in this editor` | Registers the activity hook (asks first) |
 | `TICK: Show status` | Hook, daemon, sessions counted here, balance |
-| `TICK: Open dashboard` | Copies your device token and opens the dashboard |
+| `TICK: Open dashboard` | Opens your earnings and payouts in the browser, signed in as this computer |
 | `TICK: Turn off in this editor` | Removes our hook and hides the line |
 
 `TICK: Turn off` restores `~/.claude/settings.json` to exactly what it was: we
@@ -85,11 +85,13 @@ nothing than count a guess.
 Earnings are held for 14 days before they become withdrawable, so that invalid
 traffic can be found before money leaves.
 
-Once $5 is withdrawable, run `TICK: Open dashboard`. It puts your device token
-on the clipboard and opens the dashboard; paste it there, enter a wallet
-address and a network, and ask for the payout. Payouts are sent in crypto and
-marked with the transaction hash. The token is how the dashboard knows it is
-you, so treat it like a password; we never put it in a URL.
+Once $5 is withdrawable, run `TICK: Open dashboard`. It opens the dashboard
+already signed in as this computer; enter a wallet address and a network, and
+ask for the payout. Payouts are sent in crypto and marked with the transaction
+hash. Your device token never goes into the address: the page opens with a
+code that works once, within five minutes. There you can also make it an
+account (GitHub, Google or an email), see your earnings from any browser, and
+add your other computers to one balance.
 
 ## Your own line
 
