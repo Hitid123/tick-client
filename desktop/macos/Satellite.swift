@@ -272,24 +272,67 @@ func ensureDaemon() {
 
 // ------------------------------------------------------------------ the strip
 
-/// Light or dark, as the person set it in Claude: "light", "dark", or "system"
-/// for whatever macOS says. Re-read every couple of seconds, not every frame.
+/// Light or dark, as the app in front is set, so the strip matches the app and
+/// not macOS when the two differ. One setting from each app's own file, never
+/// the screen: Claude's "userThemeMode" in its config.json; the Codex app's
+/// appearanceTheme in Codex's config.toml, table [desktop]; for Cursor the kind
+/// of theme its window last painted with, which it keeps in storage.json for
+/// its splash screen. "light", "dark", or "" for whatever macOS says. Where
+/// each comes from is written up on the Windows side, logic.go, which reads the
+/// same three. Re-read every couple of seconds, not every frame.
 let CLAUDE_CONFIG = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Claude/config.json")
+let CODEX_CONFIG = ((ENV["CODEX_HOME"] ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")) as NSString)
+  .appendingPathComponent("config.toml")
+let CURSOR_STORAGE = (NSHomeDirectory() as NSString)
+  .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/storage.json")
 var themeReadAt: Double = 0
-var claudeTheme = "system"
+var themeReadFor = ""
+var appTheme = ""
+
+let appearanceLine = try! NSRegularExpression(pattern: #"^"?appearanceTheme"?\s*=\s*"(\w+)""#)
+
+func codexTheme() -> String {
+  guard let text = try? String(contentsOfFile: CODEX_CONFIG, encoding: .utf8) else { return "" }
+  var inDesktop = false
+  for raw in text.components(separatedBy: "\n") {
+    let line = raw.trimmingCharacters(in: .whitespaces)
+    if line.hasPrefix("[") { inDesktop = line == "[desktop]"; continue }
+    guard inDesktop else { continue }
+    let ns = line as NSString
+    guard let m = appearanceLine.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { continue }
+    let value = ns.substring(with: m.range(at: 1))
+    return value == "dark" || value == "light" ? value : ""
+  }
+  return ""
+}
+
+func cursorTheme() -> String {
+  guard let m = readJSON(CURSOR_STORAGE) else { return "" }
+  // The agent window first: the one Cursor 3 opens, and its agent runs in.
+  var base = ((m["glassSplash"] as? [String: Any])?["baseTheme"] as? String) ?? ""
+  if base.isEmpty { base = (m["theme"] as? String) ?? "" }
+  switch base {
+  case "vs-dark", "hc-black": return "dark"
+  case "vs", "hc-light": return "light"
+  default: return ""
+  }
+}
 
 func darkTheme(_ host: Host) -> Bool {
-  // Codex keeps its theme inside its own browser storage, out of reach without
-  // reading it; it follows macOS unless told otherwise, and so do we there.
-  guard host.tag == CLAUDE.tag else {
-    return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-  }
   let now = nowMs()
-  if now - themeReadAt > 2000 {
+  if now - themeReadAt > 2000 || themeReadFor != host.tag {
     themeReadAt = now
-    claudeTheme = (readJSON(CLAUDE_CONFIG)?["userThemeMode"] as? String) ?? "system"
+    themeReadFor = host.tag
+    switch host.tag {
+    case CLAUDE.tag:
+      let t = (readJSON(CLAUDE_CONFIG)?["userThemeMode"] as? String) ?? "system"
+      appTheme = t == "dark" || t == "light" ? t : ""
+    case "xd": appTheme = codexTheme()
+    case "cu": appTheme = cursorTheme()
+    default: appTheme = ""
+    }
   }
-  switch claudeTheme {
+  switch appTheme {
   case "dark": return true
   case "light": return false
   default: return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

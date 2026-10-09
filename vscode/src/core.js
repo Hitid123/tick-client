@@ -715,18 +715,30 @@ const CODEX_END = '# <<< TICK activity hook';
 // recognise the other's.
 const CODEX_MARK = '# >>> TICK activity hook';
 
-function codexHooksBlock(command, events = HOOK_EVENTS) {
+/**
+ * Seconds Codex gives our hook. Three, not five: Codex caps a SessionEnd hook
+ * at three seconds and prints "clamping ... hook timeout" into the user's
+ * terminal when you ask for more — a warning about us, in their output, about
+ * a limit we could simply have respected. Ours finishes in about thirty
+ * milliseconds.
+ *
+ * Except on Windows, for the two that matter. There Codex runs every hook
+ * through a PowerShell of its own, and on the owner's PC that took 3007 ms and
+ * 3010 ms against a limit of 3, and the turn's mark was lost (Codex's own
+ * hook/started and hook/completed, 09.10). SessionEnd keeps its three.
+ */
+function codexTimeout(event, platform = process.platform) {
+  return platform === 'win32' && event !== 'SessionEnd' ? 10 : 3;
+}
+
+function codexHooksBlock(command, events = HOOK_EVENTS, platform = process.platform) {
   const body = events.map((event) => [
     `[[hooks.${event}]]`,
     'matcher = ""',
     `[[hooks.${event}.hooks]]`,
     'type = "command"',
     `command = ${JSON.stringify(command)}`,
-    // Three, not five. Codex caps a SessionEnd hook at three seconds and prints
-    // "clamping ... hook timeout" into the user's terminal when you ask for
-    // more — a warning about us, in their output, about a limit we could simply
-    // have respected. Ours finishes in about thirty milliseconds.
-    'timeout = 3',
+    `timeout = ${codexTimeout(event, platform)}`,
   ].join('\n')).join('\n\n');
 
   return [
@@ -755,23 +767,55 @@ function addCodexHooks(text, command, events = HOOK_EVENTS) {
   return { text: `${base}${base.length > 0 ? '\n' : ''}${codexHooksBlock(command, events)}\n`, changed: true };
 }
 
-/** Takes back exactly the block we added, and leaves the file otherwise byte
- *  for byte as it was found. */
+/**
+ * Takes back what we added, and leaves everything else as it was found.
+ *
+ * Codex writes into this file too, and it appends: its own tables go after the
+ * last one, which is ours, so they land inside our fence. Seen on both of the
+ * owner's machines, 09.10: Codex's [desktop] settings on the Mac, and on
+ * Windows [windows] sandbox plus the trust it records for our hooks,
+ * [hooks.state.'…']. Cutting from marker to marker took all of that with it.
+ * So what goes is exactly what we wrote — the marker and comment lines, and
+ * each [[hooks.<event>]] whose handlers all run our hook — and any other table
+ * between the markers stays, byte for byte.
+ */
 function removeCodexHooks(text) {
   const s = typeof text === 'string' ? text : '';
   const start = s.indexOf(CODEX_MARK);
   if (start === -1) return { text: s, changed: false };
   const endMark = s.indexOf(CODEX_END, start);
   if (endMark === -1) return { text: s, changed: false };
-
   const end = endMark + CODEX_END.length;
+
+  // The fence cut into tables, each from its [header] line; [0] holds the
+  // opening marker and our comments, and goes.
+  const tables = [[]];
+  for (const line of s.slice(start, endMark).split('\n')) {
+    if (/^\s*\[/.test(line)) tables.push([]);
+    tables[tables.length - 1].push(line);
+  }
+  const runsOurs = (t) => t.some((l) => /^\s*command\s*=.*hook\.mjs\\?"?\s+cx"\s*$/.test(l));
+  const kept = [];
+  for (let i = 1; i < tables.length; i++) {
+    const m = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(tables[i][0]);
+    if (!m) { kept.push(tables[i]); continue; }
+    // [[hooks.E]] with the [[hooks.E.hooks]] handlers under it, as one.
+    let j = i + 1;
+    while (j < tables.length && tables[j][0].trim() === `[[hooks.${m[1]}.hooks]]`) j++;
+    const handlers = tables.slice(i + 1, j);
+    if (!(handlers.length > 0 && handlers.every(runsOurs))) kept.push(...tables.slice(i, j));
+    i = j - 1;
+  }
+  const theirs = kept.map((t) => t.join('\n')).join('\n').replace(/\s+$/, '');
+
   let before = s.slice(0, start);
   let after = s.slice(end);
   // Swallow the blank line we inserted ahead of the block, and the newline
   // that closed it, so turning the feature on and off leaves no drift.
   before = before.replace(/\n+$/, before.length > 0 ? '\n' : '');
   after = after.replace(/^\n+/, '');
-  return { text: `${before}${after}`, changed: true };
+  const middle = theirs ? `${before.length > 0 ? '\n' : ''}${theirs}\n${after ? '\n' : ''}` : '';
+  return { text: `${before}${middle}${after}`, changed: true };
 }
 
 // ------------------------------------------------------ hooks, Cursor side
@@ -846,6 +890,7 @@ module.exports = {
   escapeMarkdown,
   tooltip,
   codexHooksBlock,
+  codexTimeout,
   codexHooksInstalled,
   addCodexHooks,
   removeCodexHooks,

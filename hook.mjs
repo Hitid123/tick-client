@@ -53,11 +53,18 @@ import { join } from 'node:path';
 // ten minutes, in the middle of the work (the owner's Claude app, 08.10). Every
 // tool call now renews the turn. Claude Code runs this one with async: true, in
 // the background, so it costs the agent nothing.
+//
+// Cursor runs the same entry: it loads Claude Code's hook file too and maps
+// PostToolUse to its own postToolUse step, under its own camelCase name (read
+// from Cursor 3.23's claude-code-types, 09.10; on the owner's Windows PC it
+// ran ours 7 and 12 times in two turns). Without the second spelling those
+// runs renewed nothing, and a long Cursor turn lost its line at ten minutes.
 const EVENTS = {
   UserPromptSubmit: 'UserPromptSubmit', Stop: 'Stop', SessionEnd: 'SessionEnd',
   beforeSubmitPrompt: 'UserPromptSubmit', stop: 'Stop', sessionEnd: 'SessionEnd',
-  PostToolUse: 'UserPromptSubmit',
+  PostToolUse: 'UserPromptSubmit', postToolUse: 'UserPromptSubmit',
 };
+const HEARTBEATS = new Set(['PostToolUse', 'postToolUse']);
 const STARTED = Date.now();
 
 /**
@@ -75,10 +82,15 @@ function agentOf(arg, env, payload, raw) {
   if (arg === 'cx') {
     // macOS: the bundle id, when there is one, settles it. Windows has none;
     // the Codex app starts its engine with CODEX_INTERNAL_ORIGINATOR_OVERRIDE
-    // set to "Codex" (seen on the running Mac app-server on 08.10), and the
-    // hooks it runs inherit it.
+    // and the hooks it runs inherit it, but the value is not the bare "Codex"
+    // the Mac app-server showed on 08.10: on the owner's Windows PC (09.10) the
+    // app's Stop hook ran with CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop,
+    // so an equality test called the app the CLI and every app turn came in as
+    // cx. Match the family instead. Failing that, CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY
+    // is set only inside the packaged app (OpenAI.Codex_2p2nqsd0c76g0 there).
     if (env.__CFBundleIdentifier) return env.__CFBundleIdentifier === 'com.openai.codex' ? 'xd' : 'cx';
-    return env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE === 'Codex' ? 'xd' : 'cx';
+    if (/^Codex\b/.test(String(env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? ''))) return 'xd';
+    return /^OpenAI\.Codex/.test(String(env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY ?? '')) ? 'xd' : 'cx';
   }
   return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' ? 'cd' : 'cc';
 }
@@ -92,7 +104,16 @@ try {
 
   let input = '';
   try { input = readFileSync(0, 'utf8'); } catch { /* no stdin: nothing to record */ }
-  const payload = JSON.parse(input || '{}');
+  // Cursor on Windows does not hand us the payload on a plain pipe. It writes
+  // it to %TEMP%\cursor-hook-payload-*.json and runs our command through
+  // Windows PowerShell as
+  //   Get-Content -LiteralPath '<file>' -Raw | & { $input | node hook.mjs cu }
+  // and PowerShell prefixes a UTF-8 BOM to the bytes it writes into a native
+  // process's stdin: measured on the owner's Windows 10 PC, 09.10, stdin began
+  // ef bb bf 7b. U+FEFF is a syntax error to JSON.parse, the catch at the
+  // bottom of this file swallowed it, and so every Cursor turn was dropped in
+  // silence. Strip it, and the CRLF the same pipeline appends.
+  const payload = JSON.parse(input.replace(/^\uFEFF+/, '').trim() || '{}');
 
   const raw = String(payload.hook_event_name ?? '');
   const ev = Object.prototype.hasOwnProperty.call(EVENTS, raw) ? EVENTS[raw] : '';
@@ -114,7 +135,7 @@ try {
   const file = join(dir, `${sid}.json`);
   // A heartbeat runs in the background and can land after the turn's own Stop.
   // A Stop written since this process started is newer news: leave it.
-  if (raw === 'PostToolUse') {
+  if (HEARTBEATS.has(raw)) {
     try {
       const prev = JSON.parse(readFileSync(file, 'utf8'));
       if (prev.ev !== 'UserPromptSubmit' && prev.ts >= STARTED) process.exit(0);

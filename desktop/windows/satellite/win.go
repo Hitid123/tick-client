@@ -9,9 +9,10 @@
 // never takes focus; a click opens the advertiser through our redirect; a drag
 // moves it sideways within the row.
 //
-// What it uses: the outer frame of Claude's window and which window is in
-// front, which Windows gives any program, and the system's light or dark
-// setting. Nothing inside Claude's window: no UI Automation, no screen capture.
+// What it uses: the outer frame of the app's window and which window is in
+// front, which Windows gives any program, and light or dark as the app is set
+// (one setting from its own file) or as Windows is. Nothing inside the app's
+// window: no UI Automation, no screen capture.
 //
 // Plain Win32 through syscall, no dependencies, so the whole program is the two
 // files next to this one.
@@ -24,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -396,6 +398,35 @@ func themeIsDark() bool {
 	return systemDark()
 }
 
+// The app in front as it is set: Claude's own setting for Claude, the Codex
+// app's and Cursor's from their own files (logic.go), and Windows' apps
+// setting where the app follows the system. Each change is logged once, so a
+// strip in the wrong colour has its answer in satellite.log.
+func hostDark(h Host) bool {
+	if h.Tag == "cd" {
+		return themeIsDark()
+	}
+	set, from := "", "Windows"
+	switch h.Tag {
+	case "xd":
+		dir := os.Getenv("CODEX_HOME")
+		if dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".codex")
+		}
+		set, from = codexTheme(filepath.Join(dir, "config.toml")), "Codex's config.toml"
+	case "cu":
+		set, from = cursorTheme(filepath.Join(os.Getenv("APPDATA"), "Cursor", "User", "globalStorage", "storage.json")), "Cursor's storage.json"
+	}
+	sys := systemDark()
+	if set == "" {
+		logOnce("theme-"+h.Tag+"-system-"+strconv.FormatBool(sys), "%s follows the system: Windows apps are %s", h.Name, map[bool]string{true: "dark", false: "light"}[sys])
+		return sys
+	}
+	logOnce("theme-"+h.Tag+"-"+set, "%s is set to %s (%s)", h.Name, set, from)
+	return set == "dark"
+}
+
 // Apps light or dark, the setting Claude follows by default.
 func systemDark() bool {
 	var v, size uint32 = 1, 4
@@ -754,12 +785,7 @@ func loop() {
 	delete(logged, "no-creative")
 	if now-themeAt > 2000 {
 		themeAt = now
-		// Claude's own setting for Claude; the others follow Windows.
-		if activeHost.Tag == "cd" {
-			dark = themeIsDark()
-		} else {
-			dark = systemDark()
-		}
+		dark = hostDark(activeHost)
 	}
 	if dark {
 		pal = darkPal
@@ -869,6 +895,18 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
 }
 
 func main() {
+	// Everything below runs on this one OS thread, and it has to: on Windows a
+	// window's messages — WM_TIMER from SetTimer above all — are delivered to
+	// the queue of the thread that created the window, and only that thread's
+	// GetMessage can take them. Go moves a goroutine between OS threads
+	// whenever it likes, so without this the loop stops the moment the main
+	// goroutine is rescheduled onto another thread: the window stays, the
+	// process stays, GetMessage waits for ever on an empty queue belonging to
+	// the wrong thread, and loop() is never called again. Measured on the
+	// owner's PC, 09.10: the strip went to 0 CPU after a few seconds with its
+	// window still alive and its main thread parked in GetMessage.
+	runtime.LockOSThread()
+
 	// One satellite per login. A second copy, from a reinstall or a double
 	// start, leaves quietly.
 	if _, _, err := pCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(u16(`Local\TickSatellite`)))); err == syscall.Errno(errorAlreadyExist) {

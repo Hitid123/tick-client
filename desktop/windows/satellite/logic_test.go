@@ -182,7 +182,7 @@ func TestOnlyAFullyVisibleStripCounts(t *testing.T) {
 }
 
 func TestHostsAreKnownByTheirFileName(t *testing.T) {
-	for exe, tag := range map[string]string{"claude.exe": "cd", "codex.exe": "xd", "cursor.exe": "cu", "windsurf.exe": "dv"} {
+	for exe, tag := range map[string]string{"claude.exe": "cd", "codex.exe": "xd", "chatgpt.exe": "xd", "cursor.exe": "cu", "windsurf.exe": "dv"} {
 		if h := hostByExe(exe); h == nil || h.Tag != tag {
 			t.Fatalf("%s should be %s, got %+v", exe, tag, h)
 		}
@@ -230,5 +230,44 @@ func TestASessionAnEditorCountsIsNotCountedTwice(t *testing.T) {
 	write(t, filepath.Join(p.State, "claims", "s2.json"), map[string]any{"owner": "vscode", "hb": now - 60000})
 	if !claimedElsewhere(p, "s1", now) || claimedElsewhere(p, "s2", now) || claimedElsewhere(p, "s3", now) {
 		t.Fatal("a fresh claim counts as elsewhere; a stale or missing one does not")
+	}
+}
+
+func TestTheStripTakesTheThemeEachAppIsSetTo(t *testing.T) {
+	dir := t.TempDir()
+	toml := filepath.Join(dir, "config.toml")
+	for text, want := range map[string]string{
+		// The Codex app's own [desktop] table; ours and anyone's around it.
+		"model = \"gpt-6\"\n\n[desktop]\nsansFontSize = 14\nappearanceTheme = \"dark\"\n# <<< TICK activity hook\n": "dark",
+		"[desktop]\nappearanceTheme = \"light\"\n":                          "light",
+		"[desktop]\nappearanceTheme = \"system\"\n":                         "",
+		"[desktop]\nsansFontSize = 14\n":                                    "",
+		"[tui]\nappearanceTheme = \"dark\"\n[desktop]\nsansFontSize = 14\n": "",
+	} {
+		if err := os.WriteFile(toml, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := codexTheme(toml); got != want {
+			t.Fatalf("codex %q: got %q, want %q", text, got, want)
+		}
+	}
+	if codexTheme(filepath.Join(dir, "none.toml")) != "" {
+		t.Fatal("no Codex config means the system's")
+	}
+
+	storage := filepath.Join(dir, "storage.json")
+	for text, want := range map[string]string{
+		`{"glassSplash":{"baseTheme":"vs-dark","background":"#181818"}}`:              "dark",
+		`{"glassSplash":{"baseTheme":"vs","background":"#ffffff"},"theme":"vs-dark"}`: "light",
+		`{"theme":"hc-black"}`: "dark",
+		`{"theme":"hc-light"}`: "light",
+		`{"telemetry.x":"y"}`:  "",
+	} {
+		if err := os.WriteFile(storage, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := cursorTheme(storage); got != want {
+			t.Fatalf("cursor %s: got %q, want %q", text, got, want)
+		}
 	}
 }

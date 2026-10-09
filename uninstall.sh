@@ -57,18 +57,41 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then
   CODEX_CONFIG=$(jq -r '.codex_config // empty' "$MANIFEST")
   if [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && [ -f "$CODEX_CONFIG" ] \
      && command -v node >/dev/null 2>&1; then
-    # The block between our two markers, and the blank line before it. A file
-    # we created that holds nothing else afterwards goes too.
+    # Our block, and nothing else: Codex appends its own tables after the last
+    # one, which is ours, so they land inside our fence ([desktop] on the
+    # owner's Mac, 09.10). The markers, our comments and each [[hooks.<event>]]
+    # whose handlers all run our hook go; every other table stays. A file we
+    # created that holds nothing else afterwards goes too. The same as
+    # removeCodexHooks in the editor extension and in install-windows.mjs.
     node - "$CODEX_CONFIG" <<'NODE' && say 'removed our Codex hook from config.toml'
 const fs = require('node:fs');
 const file = process.argv[2];
 const s = fs.readFileSync(file, 'utf8');
-const start = s.indexOf('# >>> TICK activity hook');
-const endMark = start === -1 ? -1 : s.indexOf('# <<< TICK activity hook', start);
+const START = '# >>> TICK activity hook', END = '# <<< TICK activity hook';
+const start = s.indexOf(START);
+const endMark = start === -1 ? -1 : s.indexOf(END, start);
 if (endMark === -1) process.exit(1);
+const tables = [[]];
+for (const line of s.slice(start, endMark).split('\n')) {
+  if (/^\s*\[/.test(line)) tables.push([]);
+  tables[tables.length - 1].push(line);
+}
+const runsOurs = (t) => t.some((l) => /^\s*command\s*=.*hook\.mjs\\?"?\s+cx"\s*$/.test(l));
+const kept = [];
+for (let i = 1; i < tables.length; i++) {
+  const m = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(tables[i][0]);
+  if (!m) { kept.push(tables[i]); continue; }
+  let j = i + 1;
+  while (j < tables.length && tables[j][0].trim() === `[[hooks.${m[1]}.hooks]]`) j++;
+  const handlers = tables.slice(i + 1, j);
+  if (!(handlers.length > 0 && handlers.every(runsOurs))) kept.push(...tables.slice(i, j));
+  i = j - 1;
+}
+const theirs = kept.map((t) => t.join('\n')).join('\n').replace(/\s+$/, '');
 const before = s.slice(0, start).replace(/\n+$/, start > 0 ? '\n' : '');
-const after = s.slice(endMark + '# <<< TICK activity hook'.length).replace(/^\n+/, '');
-const next = `${before}${after}`;
+const after = s.slice(endMark + END.length).replace(/^\n+/, '');
+const middle = theirs ? `${before.length > 0 ? '\n' : ''}${theirs}\n${after ? '\n' : ''}` : '';
+const next = `${before}${middle}${after}`;
 if (next.trim() === '') fs.unlinkSync(file); else fs.writeFileSync(file, next);
 NODE
   fi

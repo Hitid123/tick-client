@@ -32,10 +32,11 @@ Removing it is one command and leaves nothing behind:
 
 Requirements: `jq`, Node 20+, and a terminal. That is all.
 
-### Windows: the Claude desktop app
+### Windows: the Claude app, the Codex app, Cursor
 
-On Windows TICK runs in the Claude desktop app, through a small program of ours that
-draws the line over it (the same as the Mac's desktop satellite, below). It needs Node 20+.
+On Windows TICK shows in the Claude app (drawn by Claude Code itself, through our plugin),
+and over the Codex app and Cursor through a small program of ours that lays the line over
+their window (the same as the Mac's desktop satellite, below). It needs Node 20+.
 In PowerShell:
 
 ```powershell
@@ -43,9 +44,11 @@ iwr https://raw.githubusercontent.com/Hitid123/tick-client/main/install-windows.
 node $env:TEMP\tick-install.mjs
 ```
 
-It checks every file against `SHA256SUMS` like the Mac installer, adds three hook entries
-to `%USERPROFILE%\.claude\settings.json` (backed up first), and one value under
-`HKCU\...\CurrentVersion\Run` so it starts at login. Removing it:
+It checks every file against `SHA256SUMS` like the Mac installer, adds our hook entries to
+`%USERPROFILE%\.claude\settings.json` (backed up first), one marked block to Codex's
+`config.toml` and three entries to Cursor's `hooks.json` where those apps are installed,
+and one value under `HKCU\...\CurrentVersion\Run` so the strip starts at login. Codex asks
+you to review a new hook once: allow ours. Removing it:
 `node %USERPROFILE%\.tick\install-windows.mjs --uninstall`. In an editor on Windows, the
 [TICK extension](https://marketplace.visualstudio.com/items?itemName=tick.gettick) is the way.
 
@@ -58,12 +61,13 @@ Only what works today gets a yes. No roadmap entries in this table.
 | Claude Code, CLI, any terminal | **Yes** — this is the `statusLine` surface |
 | Claude Code inside the VS Code / Cursor terminal | **Yes**, same CLI, same hook |
 | **The Claude desktop app, macOS** | **Yes, through the desktop satellite** — see below. The app never runs a status line command (measured, not assumed), but it does run hooks, and a small program of ours draws the line |
-| The Claude desktop app, Windows | Not yet |
+| The Claude desktop app, Windows | **Yes**, drawn by Claude Code itself through our plugin |
 | Claude Code's VS Code panel | **Yes**, through the [TICK extension](https://marketplace.visualstudio.com/items?itemName=tick.gettick) |
 | Codex in the VS Code panel | **Yes**, the same extension. Codex asks you to approve our hook once, with `/hooks` |
-| OpenCode | No, planned — the TUI plugin surface exists |
+| The Codex app, macOS and Windows | **Yes**, the desktop strip over its window. Codex asks you to review our hook once |
+| Cursor's agent, macOS and Windows | **Yes**, the desktop strip over its window, from Cursor's own hooks |
+| OpenCode | Not yet — the plugin reports its turns; nothing draws them yet |
 | Codex CLI | No. Codex's `[tui] status_line` takes only its own built-in fields; there is no external-command hook and no plugin surface. Nothing to install into, and we will not patch it. Two upstream requests are open for the mechanism, and contributing it is how this changes |
-| Cursor's own agent | No, it exposes nothing |
 
 ## What is sent, and what is not
 
@@ -106,9 +110,12 @@ working and Claude is the app in front, it lays a strip over the empty row under
 message box: a quiet **Ad**, the offer, the promo code. It is a separate window on top.
 Claude itself is not modified.
 
-**What it can see.** The outer frame of Claude's window — where it is and how big — which
-macOS gives any program without asking. And one setting from Claude's own `config.json`,
-`userThemeMode`, so the strip matches the theme you chose. That is all. It asks for **no
+**What it can see.** The outer frame of the app's window — where it is and how big — which
+macOS gives any program without asking. And one setting per app, so the strip matches the
+theme you chose there: `userThemeMode` from Claude's `config.json`, `appearanceTheme` from
+the `[desktop]` table of Codex's `config.toml`, and for Cursor the kind of theme (light or
+dark) it records in its own `storage.json` for its splash screen. The Windows strip reads
+the same three. That is all. It asks for **no
 Accessibility and no Screen Recording permission**, so it cannot see what is inside the
 window, your conversation included.
 

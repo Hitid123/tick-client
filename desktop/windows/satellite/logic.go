@@ -44,21 +44,26 @@ type Paths struct {
 // the empty row under each app's message box. Cursor's was measured on the
 // Mac; the same app draws the same row on Windows.
 type Host struct {
-	Tag, Name   string
-	Also        []string // more tags whose sessions are drawn over this app
-	Exes        []string
-	DY          float64
-	Placement   string
-	ConfigKey   string // "desktop": {"<key>": {"dx", "dy"}}; "" for Claude, which owns the top level
+	Tag, Name string
+	Also      []string // more tags whose sessions are drawn over this app
+	Exes      []string
+	DY        float64
+	Placement string
+	ConfigKey string // "desktop": {"<key>": {"dx", "dy"}}; "" for Claude, which owns the top level
 }
 
 var hosts = []Host{
 	{Tag: "cd", Name: "Claude", Exes: []string{"claude.exe"}, DY: 18.5, Placement: "desktop-placement.json"},
-	// Also "cx": on Windows the hook cannot tell the Codex app from the Codex
-	// CLI (no bundle id, and the app's engine did not hand its originator to
-	// the hook on the owner's machine, 08.10: his app turns came in as cx).
-	// While the Codex app is in front a working Codex session is its own.
-	{Tag: "xd", Name: "Codex", Also: []string{"cx"}, Exes: []string{"codex.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
+	// Also "cx": on Windows the hook cannot always tell the Codex app from the
+	// Codex CLI, so while the Codex app is in front a working Codex session is
+	// its own. "chatgpt.exe": the Windows Codex app is the MSIX package
+	// OpenAI.Codex, and the process that owns its window is ChatGPT.exe, not
+	// codex.exe — codex.exe is the engine it starts, and that one has no window.
+	// Measured on the owner's PC, 09.10: the foreground window was chatgpt.exe
+	// pid 6096, class Chrome_WidgetWin_1, 890x841, image
+	// C:\Program Files\WindowsApps\OpenAI.Codex_26.1002.7124.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe,
+	// and the strip logged `in front: chatgpt.exe (not one of ours)`.
+	{Tag: "xd", Name: "Codex", Also: []string{"cx"}, Exes: []string{"codex.exe", "chatgpt.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
 	{Tag: "cu", Name: "Cursor", Exes: []string{"cursor.exe"}, DY: 15.5, Placement: "desktop-placement-cursor.json", ConfigKey: "cursor"},
 	{Tag: "dv", Name: "Devin", Exes: []string{"devin.exe", "windsurf.exe"}, DY: 18.5, Placement: "desktop-placement-devin.json", ConfigKey: "devin"},
 }
@@ -290,7 +295,6 @@ type Settings struct {
 	DX, DY  float64
 }
 
-
 func loadSettings(p Paths, h Host) Settings {
 	s := Settings{Enabled: true, DY: h.DY}
 	if d, ok := readJSON(p.Config)["desktop"].(map[string]any); ok {
@@ -393,6 +397,75 @@ func (r Rect) contains(o Rect) bool {
 // a display. Hidden, covered or dragged away, it earns nothing.
 func fullyVisible(strip, window, monitor Rect) bool {
 	return window.contains(strip) && monitor.contains(strip)
+}
+
+// ------------------------------------------------------------------ theme
+
+// Light or dark as the app in front is set, from its own settings, so the strip
+// matches the app rather than Windows: on the owner's PC both apps were dark
+// over a light Windows, and the strip came out white (09.10). One setting from
+// each app's own file, as for Claude; never the screen.
+//
+// "dark", "light", or "" for "as the system is".
+
+// The Codex app keeps its appearance in Codex's config.toml, table [desktop],
+// key appearanceTheme: "system" (the default), "light" or "dark". Read from the
+// app's own settings schema (Codex 26.1002, hostStorage "configuration", loaded
+// from config.toml's desktop table), 09.10.
+func codexTheme(configToml string) string {
+	data, err := os.ReadFile(configToml)
+	if err != nil {
+		return ""
+	}
+	inDesktop := false
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			inDesktop = t == "[desktop]"
+			continue
+		}
+		if !inDesktop {
+			continue
+		}
+		if m := appearanceLine.FindStringSubmatch(t); m != nil {
+			switch m[1] {
+			case "dark", "light":
+				return m[1]
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+var appearanceLine = regexp.MustCompile(`^"?appearanceTheme"?\s*=\s*"(\w+)"`)
+
+// Cursor writes the kind of theme each of its windows last painted with into
+// its own state file, User/globalStorage/storage.json, for the splash screen
+// it shows before the window loads: "glassSplash".baseTheme for the agent
+// window, "theme" for the editor window; vs-dark or hc-black is dark, vs or
+// hc-light light (Cursor 3.23's themeMainService, 09.10). It is what is on
+// screen, whatever theme that is and whether it follows the system. The agent
+// window first: it is the one Cursor 3 opens, and the one its agent runs in.
+func cursorTheme(storageJSON string) string {
+	m := readJSON(storageJSON)
+	if m == nil {
+		return ""
+	}
+	base := ""
+	if g, ok := m["glassSplash"].(map[string]any); ok {
+		base = str(g, "baseTheme")
+	}
+	if base == "" {
+		base = str(m, "theme")
+	}
+	switch base {
+	case "vs-dark", "hc-black":
+		return "dark"
+	case "vs", "hc-light":
+		return "light"
+	}
+	return ""
 }
 
 // Whether the TICK plugin draws the line inside the Claude app, so the strip

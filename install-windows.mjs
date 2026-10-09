@@ -104,10 +104,20 @@ const ours = (groups) => Array.isArray(groups) && groups.some((g) => g?.hooks?.s
  *  the heartbeat (the editor extension owns the three), or nothing. */
 const readText = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
 
+// Seconds Codex gives our hook. Codex runs hooks on Windows through a
+// PowerShell of its own, inside its package's sandbox, and on the owner's
+// Windows 10 PC with Avast that took 3007 ms and 3010 ms against timeout = 3,
+// and those turns lost their mark, while a warm run took 1235 ms (Codex's own
+// hook/started and hook/completed, 09.10). Ten for the two that start and end
+// a turn; never more than three for SessionEnd, which Codex clamps to three
+// with a warning printed into the user's terminal. The editor extension
+// writes the same numbers.
+const codexTimeout = (e) => (e === 'SessionEnd' ? 3 : 10);
+
 function codexBlock() {
   const body = EVENTS.map((e) => [
     `[[hooks.${e}]]`, 'matcher = ""', `[[hooks.${e}.hooks]]`, 'type = "command"',
-    `command = ${JSON.stringify(CODEX_CMD)}`, 'timeout = 3',
+    `command = ${JSON.stringify(CODEX_CMD)}`, `timeout = ${codexTimeout(e)}`,
   ].join('\n')).join('\n\n');
   return ['# >>> TICK activity hook — added by the TICK installer',
     '# Remove it with install-windows.mjs --uninstall. Codex will ask you to review',
@@ -115,14 +125,43 @@ function codexBlock() {
     body, '# <<< TICK activity hook'].join('\n');
 }
 
-function removeCodexBlock() {
-  const s = readText(CODEX_CONFIG);
-  const start = s.indexOf('# >>> TICK activity hook');
-  const endMark = start === -1 ? -1 : s.indexOf('# <<< TICK activity hook', start);
-  if (endMark === -1) return;
+/** Our block taken out of config.toml, and nothing else: Codex appends its own
+ *  tables after the last one, which is ours, so they land inside our fence —
+ *  [windows] sandbox and the trust it keeps for our hooks on the owner's PC,
+ *  09.10. What goes is the markers, our comments and each [[hooks.<event>]]
+ *  whose handlers all run our hook; every other table stays, byte for byte.
+ *  The same as removeCodexHooks in the editor extension and in uninstall.sh. */
+function stripCodexBlock(s) {
+  const START = '# >>> TICK activity hook', END = '# <<< TICK activity hook';
+  const start = s.indexOf(START);
+  const endMark = start === -1 ? -1 : s.indexOf(END, start);
+  if (endMark === -1) return null;
+  const tables = [[]];
+  for (const line of s.slice(start, endMark).split('\n')) {
+    if (/^\s*\[/.test(line)) tables.push([]);
+    tables[tables.length - 1].push(line);
+  }
+  const runsOurs = (t) => t.some((l) => /^\s*command\s*=.*hook\.mjs\\?"?\s+cx"\s*$/.test(l));
+  const kept = [];
+  for (let i = 1; i < tables.length; i++) {
+    const m = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(tables[i][0]);
+    if (!m) { kept.push(tables[i]); continue; }
+    let j = i + 1;
+    while (j < tables.length && tables[j][0].trim() === `[[hooks.${m[1]}.hooks]]`) j++;
+    const handlers = tables.slice(i + 1, j);
+    if (!(handlers.length > 0 && handlers.every(runsOurs))) kept.push(...tables.slice(i, j));
+    i = j - 1;
+  }
+  const theirs = kept.map((t) => t.join('\n')).join('\n').replace(/\s+$/, '');
   const before = s.slice(0, start).replace(/\n+$/, start > 0 ? '\n' : '');
-  const after = s.slice(endMark + '# <<< TICK activity hook'.length).replace(/^\n+/, '');
-  const next = `${before}${after}`;
+  const after = s.slice(endMark + END.length).replace(/^\n+/, '');
+  const middle = theirs ? `${before.length > 0 ? '\n' : ''}${theirs}\n${after ? '\n' : ''}` : '';
+  return `${before}${middle}${after}`;
+}
+
+function removeCodexBlock() {
+  const next = stripCodexBlock(readText(CODEX_CONFIG));
+  if (next === null) return;
   if (next.trim() === '') rmSync(CODEX_CONFIG, { force: true }); else writeFileSync(CODEX_CONFIG, next);
   say('removed our hook from Codex\'s config.toml');
 }
@@ -287,7 +326,10 @@ async function install() {
 
   if (SYSTEM) {
     execFileSync('reg', ['add', RUN_KEY, '/v', 'TICK', '/t', 'REG_SZ', '/d', `"${EXE}"`, '/f'], { stdio: 'ignore' });
-    spawn(EXE, [], { detached: true, stdio: 'ignore' }).unref();
+    // Started by Explorer, as at login, not as our own child: a program started
+    // from a shell can belong to that shell's job and die with it, which is how
+    // a strip started from a tool's shell on the owner's PC went away (09.10).
+    spawn('explorer.exe', [EXE], { detached: true, stdio: 'ignore' }).unref();
   }
 
   say('installed.');
