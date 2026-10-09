@@ -285,9 +285,13 @@ function split(text, promo) {
   return { name, before: rest.slice(0, at), promo, after: rest.slice(at + promo.length) }
 }
 
-// A line, never a cursor movement: control characters and escapes go.
+// A line, never a cursor movement: escapes, control characters of both
+// ranges and invisible direction tricks go. The daemon has already cleaned
+// it; Claude Code draws this into a terminal, so it is checked again here.
 function clean(s) {
-  return String(s).replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ')
+  return String(s)
+    .replace(/\u001b(\][^\u0007\u001b]*(\u0007|\u001b\\)?|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, ' ')
 }
 
 function safeUrl(u) {

@@ -82,7 +82,7 @@ nothing than count a guess.
 ## Getting paid
 
 `TICK: Show status` shows what you have earned and what you can withdraw.
-Earnings are held for 30 days before they become withdrawable, so that invalid
+Earnings are held for 14 days before they become withdrawable, so that invalid
 traffic can be found before money leaves.
 
 Once $5 is withdrawable, run `TICK: Open dashboard`. It puts your device token

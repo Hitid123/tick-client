@@ -66,6 +66,22 @@ const writeJson = (p, value) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * What comes from the server is shown in people's terminals, so it is cleaned
+ * here, once, for every surface: no escape sequence, no control character of
+ * either range, nothing invisible that changes what the line says. The server
+ * refuses all of that when an ad is written; this is the second lock, for the
+ * day our server is not the one answering. A terminal obeys what it is sent,
+ * and an escape sequence can write someone's clipboard.
+ */
+const ESCAPES = /\u001b(\][^\u0007\u001b]*(\u0007|\u001b\\)?|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
+export const cleanText = (s, max) =>
+  String(s ?? '').replace(ESCAPES, '').replace(INVISIBLE, ' ').replace(/ {2,}/g, ' ').trim().slice(0, max);
+// A link goes inside a terminal hyperlink: only plain URL characters, so it
+// cannot close the sequence early and smuggle in one of its own.
+export const SAFE_LINK = /^https?:\/\/[A-Za-z0-9._~:/?#@!$&()*+,;=%-]{1,2000}$/;
+
 export const hashSession = (sessionId, salt) =>
   createHash('sha256').update(`${sessionId}${salt}`).digest('hex');
 
@@ -527,12 +543,15 @@ async function cycle(cfg, device, cycleNo) {
         for (const c of res.json.creatives) {
           if (!c?.creative_id || typeof c.text !== 'string' || seen.has(c.creative_id)) continue;
           seen.add(c.creative_id);
+          const text = cleanText(c.text, 120);
+          if (!text) continue;
+          const promo = typeof c.promo_code === 'string' ? cleanText(c.promo_code, 32) : '';
           queue.push({
             creative_id: c.creative_id,
-            text: c.text,
+            text,
             ttl_sec: typeof c.ttl_sec === 'number' ? c.ttl_sec : 600,
-            ...(typeof c.click_url === 'string' ? { click_url: c.click_url } : {}),
-            ...(typeof c.promo_code === 'string' ? { promo_code: c.promo_code } : {}),
+            ...(typeof c.click_url === 'string' && SAFE_LINK.test(c.click_url) ? { click_url: c.click_url } : {}),
+            ...(promo ? { promo_code: promo } : {}),
             // The advertiser's colour, by name. Each client knows the names it
             // can draw and falls back to amber on the rest, so only the shape
             // is checked here.
