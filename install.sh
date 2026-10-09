@@ -393,6 +393,11 @@ tick: installed.
   Uninstall     ~/.tick/uninstall.sh
 
 Start a new Claude Code session to see the line.
+
+Your earnings: type /tick-dashboard in Claude Code. Make an account there
+(GitHub, Google or an email) so they stay yours if you reinstall, and all
+your computers share one balance. TICK updates itself from now on.
+
 On a Mac, the Claude desktop app gets it too: a strip under the message box
 while Claude works. Turn it off with "desktop": {"enabled": false} in
 ~/.tick/config.json, or install with --no-desktop.

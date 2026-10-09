@@ -60,7 +60,7 @@ export function register(on) {
     $.clock.every(250, () => (working && !creative ? refresh($) : undefined))
     $.clock.every(TICK_MS, () => count($))
     $.clock.every(30000, () => ensureDaemon($))
-    await suggestAutoUpdate($)
+    await hint($)
     return next(e)
   })
 
@@ -126,6 +126,7 @@ export function register(on) {
         `home: ${home}${bundled ? '' : ' (the plugin\'s own daemon copy is missing: reinstall the plugin)'}`,
         noNode ? 'Node.js was not found: install it from nodejs.org and start a new session' : `daemon: started with ${node}`,
         `updates: the daemon updates itself${autoUpdate ? '; this plugin too' : '; this plugin only when you turn on auto-update in /plugin → Marketplaces → tick'}`,
+        await accountLine($),
       ].join('\n'),
     }
   })
@@ -153,10 +154,58 @@ export function register(on) {
 // Claude Code updates a plugin from a marketplace like ours only when that
 // marketplace has auto-update on, and it is off by default for every
 // marketplace that is not Anthropic's. A plugin cannot turn it on itself, so
-// where it is off, the person is told how, in one line, at most once a week.
-// The daemon, which does the real work, updates itself either way.
+// where it is off, the person is told how (hint, above). The daemon, which
+// does the real work, updates itself either way.
 let autoUpdate = false
-async function suggestAutoUpdate($) {
+
+// One line at the start of a session, at most, and the most useful one:
+// a welcome the first time, then an account once there is money to keep,
+// then auto-update. Each repeats no more than once a week.
+async function hint($) {
+  try {
+    const now = await $.clock.now()
+    const shown = async (key, everyMs) => {
+      const last = await $.store.get(key)
+      if (typeof last === 'number' && now - last < everyMs) return true
+      await $.store.set(key, now)
+      return false
+    }
+    if ((await $.store.get('welcomed')) === undefined) {
+      await $.store.set('welcomed', now)
+      $.ui.toast('TICK is on: a short sponsored line shows while Claude works, and pays you 70%. Your earnings: /tick-dashboard', { timeoutMs: 12000 })
+      await checkAutoUpdate($)
+      return
+    }
+    const b = await balance($)
+    if (b && b.accrued > 0 && b.account === false && !(await shown('accountHint', WEEK))) {
+      $.ui.toast(`TICK: you have earned $${(b.accrued / 1e6).toFixed(2)}. Make an account so it stays yours if you reinstall, on one balance across computers: /tick-dashboard`, { timeoutMs: 15000 })
+      return
+    }
+    if (!(await checkAutoUpdate($)) && !(await shown('autoUpdateHint', WEEK))) {
+      $.ui.toast('TICK: to get new versions by itself, turn on auto-update in /plugin → Marketplaces → tick', { timeoutMs: 12000 })
+    }
+  } catch { /* a hint, never a failure */ }
+}
+const WEEK = 7 * 24 * 3600 * 1000
+
+// The balance the daemon last heard from the server, with whether it is in an account.
+async function balance($) {
+  try {
+    const b = JSON.parse(await $.fs.read(`${home}/state/balance.json`))
+    return { accrued: Number(b.accrued) || 0, account: typeof b.account === 'boolean' ? b.account : null }
+  } catch { return null }
+}
+
+async function accountLine($) {
+  const b = await balance($)
+  if (!b || b.account === null) return 'account: open /tick-dashboard to see your earnings'
+  return b.account
+    ? `account: yes, earned $${(b.accrued / 1e6).toFixed(2)} in all`
+    : `account: not yet, $${(b.accrued / 1e6).toFixed(2)} earned on this computer; make one at /tick-dashboard`
+}
+
+// True when it is on, or there is nothing to turn on.
+async function checkAutoUpdate($) {
   try {
     const settings = await $.settings.read()
     const entry = settings?.extraKnownMarketplaces?.tick
@@ -166,15 +215,10 @@ async function suggestAutoUpdate($) {
       const dir = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${user}/.claude`).replace(/\\/g, '/')
       known = JSON.parse(await $.fs.read(`${dir}/plugins/known_marketplaces.json`))?.tick ?? null
     } catch { known = null }
-    if (!entry && !known) { autoUpdate = true; return } // not installed from our marketplace: nothing to suggest
+    if (!entry && !known) { autoUpdate = true; return true } // not installed from our marketplace: nothing to turn on
     autoUpdate = typeof entry?.autoUpdate === 'boolean' ? entry.autoUpdate : known?.autoUpdate === true
-    if (autoUpdate) return
-    const now = await $.clock.now()
-    const last = await $.store.get('autoUpdateHint')
-    if (typeof last === 'number' && now - last < 7 * 24 * 3600 * 1000) return
-    await $.store.set('autoUpdateHint', now)
-    $.ui.toast('TICK: to get new versions by itself, turn on auto-update in /plugin → Marketplaces → tick', { timeoutMs: 12000 })
-  } catch { /* a hint, never a failure */ }
+    return autoUpdate
+  } catch { return true }
 }
 
 async function setUp($) {

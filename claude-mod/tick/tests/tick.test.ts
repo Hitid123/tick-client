@@ -16,7 +16,7 @@ const BAND = {
 
 // Everything the mod asks Claude Code for, answered here; what it writes and
 // what it runs, collected.
-function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01, dashboard = {} as Record<string, unknown>, marketplace = null as null | Record<string, unknown> } = {}) {
+function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfaces = ['desktop'] as string[], env = { HOME: '/Users/dev' } as Record<string, string>, costStep = 0.01, dashboard = {} as Record<string, unknown>, marketplace = null as null | Record<string, unknown>, stored = {} as Record<string, unknown>, balance = null as null | Record<string, unknown> } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, env)
   const runs: any[] = []
@@ -35,10 +35,14 @@ function machine(on, { statusLine = '', line = LINE as typeof LINE | null, surfa
   const toasts: string[] = []
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
   // The store that outlives sessions.
-  const store = new Map<string, unknown>()
+  const store = new Map<string, unknown>(Object.entries(stored))
   on('store.get', ($, e) => ({ value: store.get(e.key) }))
   on('store.set', ($, e) => { store.set(e.key, e.value); return { value: undefined } })
-  on('fs.read', ($, e) => (line && e.path.endsWith('/.tick/state/current.json') ? { value: JSON.stringify(line) } : { deny: 'no such file' }))
+  on('fs.read', ($, e) => {
+    if (line && e.path.endsWith('/.tick/state/current.json')) return { value: JSON.stringify(line) }
+    if (balance && e.path.endsWith('/.tick/state/balance.json')) return { value: JSON.stringify(balance) }
+    return { deny: 'no such file' }
+  })
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
   on('fs.exists', () => ({ value: true }))
   // `daemon.mjs --dashboard` answers with one line of JSON.
@@ -206,8 +210,43 @@ test('/tick-dashboard where no browser opens gives the address to open by hand',
   expect(r.text).toContain('five minutes')
 })
 
+const MARKET = { source: { source: 'github', repo: 'Hitid123/tick-client' } }
+
+test('the first session says what TICK is and where the earnings are, once', async ($, on) => {
+  const { toasts, clock } = machine(on, { marketplace: { ...MARKET, autoUpdate: true } })
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('/tick-dashboard')
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+})
+
+test('with money earned and no account, it suggests one, at most weekly', async ($, on) => {
+  const { toasts, clock } = machine(on, { marketplace: { ...MARKET, autoUpdate: true }, stored: { welcomed: 1 }, balance: { accrued: 1_230_000, account: false } })
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('$1.23')
+  expect(toasts[0]).toContain('Make an account')
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  const r = await $.command.run({ command: 'tick' })
+  expect(r.text).toContain('account: not yet')
+})
+
+test('with an account, nothing is suggested', async ($, on) => {
+  const { toasts, clock } = machine(on, { marketplace: { ...MARKET, autoUpdate: true }, stored: { welcomed: 1 }, balance: { accrued: 1_230_000, account: true } })
+  await start($, 'terminal')
+  await clock.settle()
+  expect(toasts.length).toBe(0)
+  expect((await $.command.run({ command: 'tick' })).text).toContain('account: yes')
+})
+
 test('installed from our marketplace with auto-update off, it says once how to turn it on', async ($, on) => {
-  const { toasts, clock } = machine(on, { marketplace: { source: { source: 'github', repo: 'Hitid123/tick-client' } } })
+  const { toasts, clock } = machine(on, { marketplace: MARKET, stored: { welcomed: 1 } })
   await start($, 'terminal')
   await clock.settle()
   expect(toasts.length).toBe(1)
@@ -221,7 +260,7 @@ test('installed from our marketplace with auto-update off, it says once how to t
 })
 
 test('with auto-update on, nothing is said', async ($, on) => {
-  const { toasts, clock } = machine(on, { marketplace: { source: { source: 'github', repo: 'Hitid123/tick-client' }, autoUpdate: true } })
+  const { toasts, clock } = machine(on, { marketplace: { ...MARKET, autoUpdate: true }, stored: { welcomed: 1 } })
   await start($, 'terminal')
   await clock.settle()
   expect(toasts.length).toBe(0)

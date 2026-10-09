@@ -933,6 +933,7 @@ function showStatus(channel) {
     `Background process: ${daemonAlive() ? 'running' : 'not running'}`,
     `Sessions this window counts: ${sessions.size}`,
     `Balance: $${core.usd(balance && balance.available)} to withdraw, $${core.usd(balance && balance.accrued)} earned`,
+    `Account: ${balance && balance.account === true ? 'yes' : balance && balance.account === false ? 'not yet, make one with TICK: Open dashboard' : 'unknown yet'}`,
   ];
 
   log(channel, `status — ${why.join(' ')} | ${detail.join(' · ')}`);
@@ -1039,8 +1040,30 @@ function activate(context) {
     try { cycle(context, channel); } catch (e) { log(channel, `cycle: ${e && e.stack}`); }
   }, core.PANEL_DEFAULTS.tick_ms);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
+  // A minute in, so it never lands on top of the setup question.
+  const hint = setTimeout(() => { try { suggestAccount(context); } catch { /* a hint */ } }, 60_000);
+  context.subscriptions.push({ dispose: () => clearTimeout(hint) });
 
   log(channel, `activated in ${vscode.env.appName} (${HOST}), home=${HOME}`);
+}
+
+/**
+ * Once there is money on this computer and no account to keep it in, say so,
+ * at most once a week: an account keeps the earnings through a reinstall and
+ * gathers several computers on one balance. The plugin for Claude Code says
+ * the same in its own words.
+ */
+const ACCOUNT_HINT = 'tick.accountHintAt';
+function suggestAccount(context) {
+  const balance = readJson(P.balance, null);
+  if (!balance || balance.account !== false || !(Number(balance.accrued) > 0)) return;
+  const last = context.globalState.get(ACCOUNT_HINT, 0);
+  if (Date.now() - last < 7 * 24 * 3600 * 1000) return;
+  context.globalState.update(ACCOUNT_HINT, Date.now());
+  vscode.window.showInformationMessage(
+    `TICK: you have earned $${core.usd(balance.accrued)}. Make an account so it stays yours if you reinstall, and your computers share one balance.`,
+    'Open dashboard', 'Later',
+  ).then((pick) => { if (pick === 'Open dashboard') openDashboard(); });
 }
 
 function deactivate() {

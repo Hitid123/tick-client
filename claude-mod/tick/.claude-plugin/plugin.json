@@ -1,6 +1,6 @@
 {
   "name": "tick",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "One short sponsored line above the prompt while Claude works. 70% of the gross goes to you, paid in crypto from $5.",
   "author": { "name": "TICK", "url": "https://gettick.dev" },
   "homepage": "https://gettick.dev"

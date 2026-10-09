@@ -2,7 +2,7 @@
   "name": "gettick",
   "displayName": "TICK for Claude Code & Codex",
   "description": "One sponsored line in your editor status bar, for Claude Code and Codex. 70% of gross goes to you, paid in crypto from $5.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "publisher": "tick",
   "repository": { "type": "git", "url": "https://github.com/Hitid123/tick-client" },

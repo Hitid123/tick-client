@@ -364,7 +364,11 @@ async function install() {
 ${codexAdded && !prev?.codex_added ? `
   Codex asks to review a new hook once before it runs it: allow ours when it does.
 ` : ''}
-  It sees only where each window is, never what is in it.
+  Your earnings: type /tick-dashboard in Claude Code. Make an account there (GitHub,
+  Google or an email) so they stay yours if you reinstall, and all your computers share
+  one balance. TICK updates itself from now on.
+
+  The strip sees only where each window is, never what is in it.
   What it sees: node "${join(HOME, 'install-windows.mjs')}" --report
   Turn it off:  "desktop": {"enabled": false} in ${configPath}
   Remove it:    node "${join(HOME, 'install-windows.mjs')}" --uninstall
