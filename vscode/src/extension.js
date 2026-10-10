@@ -717,20 +717,33 @@ function accountFor(view, now, channel) {
  * which can report what it displayed; this surface cannot. It is a second
  * placement for the advertiser, not a second sale.
  */
+// Each editor has its own settings store, so each keeps its own record of what
+// it wrote there. Until 0.1.6 VS Code and Cursor shared one file: each saw the
+// other's value, took the key for someone else's and gave it up for good,
+// leaving whatever line was last written in the spinner for ever (the owner's
+// VS Code on 10.10 still said a test ad from two days before).
+const SPINNER_STATE = path.join(STATE, `panel-spinner-${HOST || 'code'}.json`);
+
 function syncSpinner(view, channel) {
   const cfg = readJson(P.config, {}) || {};
   const enabled = cfg.spinner !== false
     && vscode.workspace.getConfiguration('tick').get('enabled', true);
 
-  const state = readJson(P.spinner, null);
-  if (state && state.yielded === true) return;
-  const ours = state ? state.wrote ?? null : null;
-
   const conf = vscode.workspace.getConfiguration('claudeCode');
   const theirs = conf.inspect('spinnerVerbs')?.globalValue;
 
-  if (!core.spinnerIsOurs(theirs, ours)) {
-    writeJsonAtomic(P.spinner, { wrote: null, yielded: true });
+  let state = readJson(SPINNER_STATE, null);
+  // Once, on the way from the shared file: a key in the one shape we write,
+  // on a machine where we were writing it, is ours to take back.
+  if (state === null && fs.existsSync(P.spinner) && core.looksLikeOurSpinner(theirs)) {
+    state = { wrote: theirs };
+    log(channel, 'panel spinner: taking back the line an older version left behind');
+  }
+  if (state && state.yielded === true) return;
+  const ours = state ? state.wrote ?? null : null;
+
+  if (!core.spinnerIsOurs(theirs, ours, state ? state.prev : undefined)) {
+    writeJsonAtomic(SPINNER_STATE, { wrote: null, yielded: true });
     log(channel, 'the panel spinner key belongs to someone else, leaving it alone for good');
     return;
   }
@@ -740,11 +753,17 @@ function syncSpinner(view, channel) {
     ownLine: typeof cfg.own_line === 'string' ? cfg.own_line : '',
     enabled,
   });
-  if (JSON.stringify(desired ?? null) === JSON.stringify(ours ?? null)) return;
+  if (JSON.stringify(desired ?? null) === JSON.stringify(theirs ?? null)) {
+    if (JSON.stringify(desired ?? null) !== JSON.stringify(ours ?? null)) writeJsonAtomic(SPINNER_STATE, { wrote: desired });
+    return;
+  }
 
+  // Recorded before the write, with the value it replaces: another window of
+  // this editor reading in between accepts either.
+  writeJsonAtomic(SPINNER_STATE, { wrote: desired, prev: theirs ?? null });
   conf.update('spinnerVerbs', desired ?? undefined, vscode.ConfigurationTarget.Global).then(
     () => {
-      writeJsonAtomic(P.spinner, { wrote: desired });
+      writeJsonAtomic(SPINNER_STATE, { wrote: desired });
       log(channel, `panel spinner: ${desired ? desired.verbs.join(' / ') : 'cleared'}`);
     },
     (err) => log(channel, `panel spinner not written: ${err && err.message}`),

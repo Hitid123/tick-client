@@ -213,6 +213,8 @@ for a payout from $5. You can also make it an account (GitHub, Google or an
 email), to see it from any browser and add your other computers to one
 balance.
 
+Questions, a payout that did not arrive, anything else: **support@gettick.dev**.
+
 ## Your own line
 
 Unsold inventory goes to you. Put this in `~/.tick/config.json`:

@@ -484,9 +484,23 @@ function spinnerVerbsFor({ view, ownLine = '', enabled = true }) {
  * else means the person (or another tool) owns it, and then we never touch it
  * again — the same rule the daemon follows for the CLI's copy of this key.
  */
-function spinnerIsOurs(onDisk, wrote) {
+function spinnerIsOurs(onDisk, wrote, prev) {
   if (onDisk === undefined || onDisk === null) return true;
-  return JSON.stringify(onDisk) === JSON.stringify(wrote ?? null);
+  const same = (v) => JSON.stringify(onDisk) === JSON.stringify(v ?? null);
+  // `prev`: the value before a write that another window of the same editor
+  // may not have seen land yet. Without it, two windows raced and one of them
+  // gave the key up for good.
+  return same(wrote) || (prev !== undefined && same(prev));
+}
+
+/**
+ * The one shape this extension ever writes: a mode and a single line. Used
+ * once, to take back a key a shared state file made us give up by mistake.
+ */
+function looksLikeOurSpinner(v) {
+  return Boolean(v) && (v.mode === 'replace' || v.mode === 'append')
+    && Array.isArray(v.verbs) && v.verbs.length === 1 && typeof v.verbs[0] === 'string'
+    && Object.keys(v).length === 2;
 }
 
 // -------------------------------------------------------------- diagnosis
@@ -908,6 +922,7 @@ module.exports = {
   safeSessionId,
   spinnerVerbsFor,
   spinnerIsOurs,
+  looksLikeOurSpinner,
   diagnose,
   claimIsOurs,
   claimedByTerminal,
