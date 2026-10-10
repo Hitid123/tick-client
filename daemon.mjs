@@ -46,7 +46,9 @@ const DEFAULTS = {
   active_window_ms: 120_000,
   queue_low_water: 3,
   queue_fetch: 10,
-  fetch_backoff_max_ms: 30 * 60_000,
+  // Asked at most this rarely while nothing is on offer: a new campaign
+  // reaches a running machine within ten minutes.
+  fetch_backoff_max_ms: 10 * 60_000,
   idle_exit_ms: 15 * 60_000,
   request_timeout_ms: 5_000,
   request_attempts: 3,
@@ -255,7 +257,12 @@ export function fetchPlan(queue, cfg, state, now, currentExpiresAt = 0) {
   // not leave the line empty: when the creative on screen is about to run out
   // and nothing is queued behind it, ask now rather than at the end of a
   // doubled wait.
-  const runningOut = queue.length === 0 && currentExpiresAt > 0 && currentExpiresAt - now <= cfg.cycle_ms;
+  // Around the moment it ends, not long after: a line that ran out a while ago,
+  // with nothing to be had, waits out the backoff like any other ask. Before
+  // 10.10 an expired line counted as "running out" for ever, and with no ads
+  // left the daemon asked every ten seconds, all day.
+  const left = currentExpiresAt - now;
+  const runningOut = queue.length === 0 && currentExpiresAt > 0 && left <= cfg.cycle_ms && left > -cfg.cycle_ms;
   if (now < state.until && !runningOut) return { fetch: false, n: 0 };
   const missing = cfg.queue_low_water - queue.length;
   return { fetch: true, n: Math.max(1, Math.min(cfg.queue_fetch, missing)) };
@@ -665,7 +672,7 @@ async function main() {
       await sleep(Math.min(1000, until - Date.now()));
       try { rotateLocally(); } catch { /* the next cycle rotates anyway */ }
       const t = Date.now();
-      if (lineEndingSoon(t) && t - lastFetchAt > 10_000 && t - lastEarlyAt > 10_000) { lastEarlyAt = t; break; }
+      if (lineEndingSoon(t, cfg) && t - lastFetchAt > 10_000 && t - lastEarlyAt > 10_000) { lastEarlyAt = t; break; }
     }
   }
 }
@@ -676,12 +683,14 @@ let lastFetchAt = 0;
 let lastEarlyAt = 0;
 
 /** Nothing queued, and the line on screen is gone or about to go. */
-function lineEndingSoon(now) {
+function lineEndingSoon(now, cfg) {
   const queue = readJson(P.queue, []) ?? [];
   if (Array.isArray(queue) && queue.length > 0) return false;
   const cur = readJson(P.current, null);
   const ends = cur && typeof cur.expires_at === 'number' ? cur.expires_at : 0;
-  return ends - now < 15_000;
+  // And only when an ask would actually be made: early cycles that then wait
+  // out a backoff are just a busier loop.
+  return ends - now < 15_000 && fetchPlan([], cfg, fetchState, now, ends).fetch;
 }
 
 function rotateLocally() {
