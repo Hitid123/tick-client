@@ -8,7 +8,7 @@
 // No dependencies. Node 20+.
 
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync, statSync, realpathSync, chmodSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync, statSync, realpathSync, chmodSync, copyFileSync, readdirSync } from 'node:fs';
 import { homedir, platform, arch } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -31,6 +31,8 @@ const P = {
   pid: join(STATE, 'daemon.pid'),
   spinner: join(STATE, 'spinner.json'),
   update: join(STATE, 'update.json'),
+  profile: join(STATE, 'profile.json'),
+  activity: join(STATE, 'activity'),
   updated: join(STATE, 'updated.json'),
 };
 
@@ -197,8 +199,7 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now()) {
 /**
  * Items of one session and one campaign, added up across cycles: their counts
  * and times summed, the earliest start and the latest end kept. Kept apart by
- * session, because two windows at once are two items: the server checks each
- * against its own time span.
+ * session, because two windows at once are two separate items.
  */
 export function mergeItems(prev, items) {
   const out = prev.map((i) => ({ ...i }));
@@ -215,12 +216,24 @@ export function mergeItems(prev, items) {
   return out;
 }
 
+/**
+ * Which kind of place drew the line, from the stream's own prefix: the editor
+ * writes `vsc:`, the desktop strip `dsk:`, the Claude Code mod `mod:`, and the
+ * terminal status line the bare session id. Read before the id is hashed; the
+ * id itself never leaves.
+ */
+export function surfaceOf(sid) {
+  const m = /^(vsc|dsk|mod):/.exec(String(sid ?? ''));
+  return m ? m[1] : 'term';
+}
+
 export function buildBatch(items, salt) {
   return {
     batch_id: randomUUID(),
     items: items.map((i) => ({
       creative_id: i.creative_id,
       count: i.count,
+      surface: surfaceOf(i.session_hash),
       session_hash: hashSession(i.session_hash, salt),
       first_ts: i.first_ts,
       last_ts: i.last_ts,
@@ -236,17 +249,15 @@ export function buildBatch(items, salt) {
 /**
  * Whether to ask the server for more creatives, and how many.
  *
- * Asking is not free. The server counts a hand-out against the device's daily
- * frequency cap, so a client that asks four times has spent the whole day's
- * allowance for that campaign whether or not anything was ever displayed.
+ * Asking is not free: a creative handed out counts against how often this
+ * device can be given it, whether or not it is ever displayed.
  *
  * Two things went wrong before this existed. The queue only refills below the
  * low-water mark, but with fewer live campaigns than that mark the queue can
- * never reach it — so the daemon asked every single cycle, burned the default
- * cap of four in two minutes, and the line went dark for the rest of the day.
- * That is the normal state of a young network, not an edge case. And asking for
- * ten when two are needed spends cap on eight campaigns that will not be shown
- * before the next request anyway.
+ * never reach it — so the daemon asked every single cycle, and the line went
+ * dark early. That is the normal state of a young network, not an edge case.
+ * And asking for ten when two are needed spends hand-outs on campaigns that
+ * will not be shown before the next request anyway.
  *
  * So: ask for what is missing, not for a bucketful, and after a request that
  * brought back nothing new, wait longer each time before asking again.
@@ -532,6 +543,61 @@ function followServer(device, cfg) {
 /** How long to wait before asking for creatives again. See fetchPlan. */
 let fetchState = { until: 0, step: 0 };
 
+// ------------------------------------------------------------- the machine
+
+const AGENT_TAGS = new Set(['cc', 'cd', 'cx', 'xd', 'cu', 'dv', 'oc']);
+
+/**
+ * What is said about this machine, at most once a day: the system, its
+ * language and region, the time zone, this client's release, and how many
+ * sessions each agent had in the last day — a count per agent, read from the
+ * hook's own marks, which hold a time, an event name and the agent and nothing
+ * else. Used to show people ads in their language, and to count how many
+ * people use which tools. No name, no path, no text from any conversation.
+ */
+export function machineProfile(now = Date.now(), env = process.env, activityDir = P.activity) {
+  const intl = Intl.DateTimeFormat().resolvedOptions();
+  let locale = intl.locale || '';
+  // A Mac app started at login has no LANG; the system's own setting is the truth there.
+  if (platform() === 'darwin') {
+    try { locale = execFileSync('defaults', ['read', '-g', 'AppleLocale'], { encoding: 'utf8', timeout: 2000 }).trim() || locale; } catch { /* keep Intl's */ }
+  } else if (env.LANG && /^[a-z]{2,3}_[A-Z]{2}/.test(env.LANG)) {
+    locale = env.LANG.split('.')[0];
+  }
+  const agents = {};
+  try {
+    for (const f of readdirSync(activityDir)) {
+      if (!f.endsWith('.json')) continue;
+      const mark = readJson(join(activityDir, f), null);
+      if (!mark || typeof mark.ts !== 'number' || now - mark.ts > 86_400_000) continue;
+      const ag = AGENT_TAGS.has(mark.ag) ? mark.ag : 'cc';
+      agents[ag] = (agents[ag] ?? 0) + 1;
+    }
+  } catch { /* no hook marks on this machine */ }
+  const os = { darwin: 'mac', win32: 'win', linux: 'linux' }[platform()] ?? 'other';
+  const release = readJson(P.update, null)?.release;
+  return {
+    os,
+    locale: /^[A-Za-z0-9_@.-]{2,35}$/.test(locale) ? locale : null,
+    tz: /^[A-Za-z0-9_+\-/]{1,64}$/.test(intl.timeZone ?? '') ? intl.timeZone : null,
+    client: typeof release === 'string' ? release.slice(0, 12) : null,
+    agents,
+  };
+}
+
+/** Sends the machine's profile when a day has passed, or when it changed. */
+async function reportProfile(cfg, device, now = Date.now()) {
+  const last = readJson(P.profile, null);
+  // Looked at hourly at most, and sent when a day has passed or something changed.
+  if (last && now - (last.checked ?? last.at ?? 0) < 3_600_000) return;
+  const profile = machineProfile(now);
+  const sig = JSON.stringify({ ...profile, agents: Object.keys(profile.agents).sort() });
+  if (last && now - (last.at ?? 0) < 86_400_000 && last.sig === sig) { writeJson(P.profile, { ...last, checked: now }); return; }
+  const res = await request(cfg, 'POST', '/devices/profile', profile, device.token);
+  if (res.ok || (res.status >= 400 && res.status < 500)) writeJson(P.profile, { at: now, checked: now, sig });
+  else writeJson(P.profile, { ...(last ?? { at: 0, sig: '' }), checked: now });
+}
+
 async function cycle(cfg, device, cycleNo) {
   followServer(device, cfg);
   const now = Date.now();
@@ -615,6 +681,8 @@ async function cycle(cfg, device, cycleNo) {
       const res = await request(cfg, 'GET', '/balance', undefined, device.token);
       if (res.ok && res.json) writeJson(P.balance, res.json);
     }
+
+    if (cfg.profile !== false) await reportProfile(cfg, device).catch(() => {});
 
     rotateCurrent(queue, Date.now());
     writeJson(P.queue, queue);
@@ -786,7 +854,7 @@ async function openDashboard() {
  *   - Not everyone at once: each machine waits its own few hours after a
  *     release first appears, so a bad one can be withdrawn while it reaches
  *     few. Withdrawing is just publishing the old files again.
- *   - The server can pause updates for everyone (CLIENT_UPDATES=off there).
+ *   - The server can pause updates for everyone.
  *   - A daemon that replaced itself exits; whatever started it starts the new
  *     one within seconds, as it does after any exit.
  */

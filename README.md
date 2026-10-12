@@ -1,8 +1,9 @@
 # TICK client
 
-A one-line ad marketplace that lives in the Claude Code status line — and, on a Mac, in a
-strip under the message box of the Claude desktop app. You see a short line, the
-advertiser pays, and **70% of the revenue is yours**.
+One short sponsored line next to your AI — Claude Code in the terminal, the Claude app,
+the Codex app, Cursor and VS Code, on macOS and Windows — shown only while the model is
+working. The advertiser pays, and **70% of the revenue is yours**, paid in crypto from $5.
+The table under [Where it works](#where-it-works) says exactly what draws the line where.
 
 ## Install
 
@@ -84,6 +85,15 @@ This is the whole reason to pick us, so here it is without hedging.
 | Environment variables, API keys, tokens | A device fingerprint |
 | Shell history | Your country, derived from the IP of the request |
 | **Your raw `session_id`** | A one-way code of your IP address (below) |
+| | Where the line was on screen: terminal, editor, desktop strip or the Claude Code mod |
+| | Once a day: your system (macOS, Windows, Linux), its language and region (e.g. `ru_RU`), time zone, this client's version, and how many sessions each agent had that day (e.g. Claude Code 3, Cursor 1) |
+
+**Why the daily line.** Language, region and time zone decide which ads you are shown: an
+advertiser buying Russian-speaking developers should reach you if that is who you are, even
+behind a VPN. The counts per agent tell us how many people use which tools, in total; they
+are what an advertiser asks before buying. The session counts come from our hook's own marks,
+which hold a time, an event name and an agent tag — nothing from the conversation. To stop
+sending it, set `"profile": false` in `~/.tick/config.json`; the line still shows and earns.
 
 **Your IP address is kept only as a code.** The server turns the address of each request
 into a keyed one-way code and keeps that, against fraud, together with the name your client
@@ -103,9 +113,9 @@ The session id is hashed with a random salt that is generated on your machine, s
 `~/.tick/state/device.json`, and never transmitted. The server cannot link a session hash
 back to a session id, and cannot correlate one across machines.
 
-Everything above is enforced by a test that runs the real scripts, captures the real HTTP
-payload, and fails if any forbidden string appears in it
-([`tests/privacy.test.mjs`](../tests/privacy.test.mjs)). It is part of CI.
+Everything above is enforced by a test that runs the real scripts from this repository,
+captures the real HTTP payload, and fails if any forbidden string appears in it. It runs
+before every release.
 
 ## Updates
 

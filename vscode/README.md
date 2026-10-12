@@ -4,13 +4,16 @@ One short sponsored line in your editor's status bar. **70% of the gross goes to
 you**, paid in crypto from $5. Nothing is patched, nothing is read, and you can
 turn it off in one command.
 
-Works with **Claude Code and Codex**, tested live in VS Code. Also built for
-**Cursor's own agent, Devin (formerly Windsurf) and OpenCode**: in Cursor and
-Devin the extension registers with that editor's own hooks, and OpenCode gets a
-small plugin that reports its turns. Those are being tested now; the line shows
-in the status bar of whichever of these editors you use. On Windows this
-extension *is* the client: the editor provides the runtime, so no shell script
-is needed.
+Works with **Claude Code and Codex** in VS Code and Cursor, on macOS and
+Windows, tested live. On Windows this extension *is* the client: the editor
+provides the runtime, so no shell script is needed.
+
+**Cursor's own agent** works too, but not through this extension: Cursor does
+not run extensions inside its agent window, so the line there is a small strip
+over that window, which our installer sets up (see the
+[client README](https://github.com/Hitid123/tick-client#where-it-works)). For
+**Devin (formerly Windsurf) and OpenCode** the extension already registers their
+hooks; we have not watched a live turn in either yet, so we do not promise them.
 
 Codex cannot show our line in its own terminal status line — that one is
 assembled from built-in elements and takes no external command. In the editor it
