@@ -86,7 +86,7 @@ This is the whole reason to pick us, so here it is without hedging.
 | Shell history | Your country, derived from the IP of the request |
 | **Your raw `session_id`** | A one-way code of your IP address (below) |
 | | Where the line was on screen: terminal, editor, desktop strip or the Claude Code mod |
-| | Once a day: your system (macOS, Windows, Linux), its language and region (e.g. `ru_RU`), time zone, this client's version, and how many sessions each agent had that day (e.g. Claude Code 3, Cursor 1) |
+| | Once a day: your system (macOS, Windows, Linux), its language and region (e.g. `ru_RU`), time zone, this client's version, and how many sessions each agent had that day (e.g. Claude Code 3, Cursor 1); and two yes-or-no answers: is this a virtual machine, and can the system tell someone is at the keyboard |
 
 **Why the daily line.** Language, region and time zone decide which ads you are shown: an
 advertiser buying Russian-speaking developers should reach you if that is who you are, even
@@ -94,6 +94,14 @@ behind a VPN. The counts per agent tell us how many people use which tools, in t
 are what an advertiser asks before buying. The session counts come from our hook's own marks,
 which hold a time, an event name and an agent tag — nothing from the conversation. To stop
 sending it, set `"profile": false` in `~/.tick/config.json`; the line still shows and earns.
+
+**Nobody at the keyboard, nothing counted.** An agent can run for hours with nobody at the
+screen, and then its line is shown to no one. So every few seconds the client asks the system
+one number: how long since any key or the mouse was last touched, the same number that starts
+a screensaver. After five minutes the line stays, but it stops counting until you are back.
+It never learns which key or where the pointer is, and the number itself never leaves your
+machine. Where the system cannot say (a server over SSH, Linux without a desktop), it counts
+as before.
 
 **Your IP address is kept only as a code.** The server turns the address of each request
 into a keyed one-way code and keeps that, against fraud, together with the name your client

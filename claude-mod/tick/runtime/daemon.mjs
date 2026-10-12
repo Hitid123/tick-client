@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkS
 import { homedir, platform, arch } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 
 const HOME = process.env.TICK_HOME || join(homedir(), '.tick');
 const STATE = join(HOME, 'state');
@@ -66,6 +66,10 @@ const DEFAULTS = {
   // what it has; the next install, or turning it back on, catches it up.
   auto_update: true,
   update_every_ms: 3 * 60 * 60_000,
+  // Nobody has touched the keyboard or the mouse for this long: the line is
+  // still drawn, but it is no longer counted (see presence below).
+  presence_ms: 5 * 60_000,
+  presence_sample_ms: 5_000,
 };
 
 // ---------------------------------------------------------------- utilities
@@ -114,7 +118,7 @@ export const hashSession = (sessionId, salt) =>
  * `carry` holds the per-session tail of the previous cycle, so a cycle
  * boundary never costs the publisher a fraction of a second.
  */
-export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now()) {
+export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), present = () => true) {
   const next = { ...carry };
   const bySession = new Map();
 
@@ -146,7 +150,7 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now()) {
         const withinGap = delta > 0 && delta <= cfg.tick_max_gap_ms;
         const active = cur.ts - lastIncreaseTs <= cfg.active_window_ms;
 
-        if (sameCreative && withinGap && active) {
+        if (sameCreative && withinGap && active && present(cur.ts)) {
           const b = (pending[cur.cid] ??= {
             rem: 0, active: 0, api: 0, first: prev.ts, last: cur.ts, model: cur.model ?? null,
           });
@@ -343,6 +347,155 @@ async function request(cfg, method, path, body, token) {
     } catch (e) { lastErr = e; }
   }
   return { ok: false, status: 0, error: String(lastErr) };
+}
+
+// ---------------------------------------------------------------- presence
+
+/**
+ * Is a person at this computer? An agent can be left running all night with
+ * nobody at the screen, and then its line is shown to no one: no advertiser
+ * should pay for that (the owner's decision, 12.10). So the daemon asks the
+ * system one number every few seconds — how long since any key or the mouse
+ * was last touched, the same number that starts a screensaver — and an
+ * impression counts only while that was within the last five minutes.
+ *
+ * Which key, where the pointer is, what is on screen: none of it is asked
+ * for, and none of it is available this way. The number never leaves the
+ * machine; it only decides what is counted.
+ *
+ * `inputs` are the moments of last input the system reported, ascending;
+ * `since` is when we started asking. A moment we could not ask about (before
+ * the daemon started) is given the benefit of the doubt only for a minute,
+ * so stopping the daemon does not turn the time it was away into paid time.
+ */
+export function isPresent(inputs, since, ts, cfg = DEFAULTS) {
+  if (inputs == null) return true;               // this system cannot say: not held against anyone
+  let before = null, after = null;
+  for (const at of inputs) {
+    if (at <= ts) before = at;
+    else { after = at; break; }
+  }
+  if (before != null && ts - before <= cfg.presence_ms) return true;
+  return ts < since && after != null && after - ts <= 60_000;
+}
+
+/** Reads the system's idle time, in milliseconds, or gives up on this system. */
+function idleSampler() {
+  const os = platform();
+  if (os === 'darwin') {
+    return async () => {
+      const out = await run('ioreg', ['-c', 'IOHIDSystem', '-d', '4', '-r', '-k', 'HIDIdleTime']);
+      const m = /"HIDIdleTime" = (\d+)/.exec(out ?? '');
+      return m ? Number(BigInt(m[1]) / 1_000_000n) : null;
+    };
+  }
+  if (os === 'win32') return windowsIdle();
+  if (os === 'linux' && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
+    return async () => {
+      const x = await run('xprintidle', []);
+      if (x && /^\d+\s*$/.test(x)) return Number(x);
+      const g = await run('gdbus', ['call', '--session', '--dest', 'org.gnome.Mutter.IdleMonitor', '--object-path',
+        '/org/gnome/Mutter/IdleMonitor/Core', '--method', 'org.gnome.Mutter.IdleMonitor.GetIdletime']);
+      const m = /uint64 (\d+)/.exec(g ?? '');
+      return m ? Number(m[1]) : null;
+    };
+  }
+  return null;
+}
+
+function run(cmd, args) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8', timeout: 3000, windowsHide: true }, (err, out) => resolve(err ? null : out));
+  });
+}
+
+/**
+ * Windows answers through GetLastInputInfo, which only a native call reaches.
+ * One PowerShell is started for the daemon's whole life and prints the idle
+ * time every few seconds; starting one per question would cost half a second
+ * of CPU each time.
+ */
+function windowsIdle() {
+  const script = `Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class TickIdle {
+  [StructLayout(LayoutKind.Sequential)] struct LII { public uint cbSize; public uint dwTime; }
+  [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LII p);
+  public static uint Ms() { var l = new LII(); l.cbSize = (uint)Marshal.SizeOf(l); if (!GetLastInputInfo(ref l)) return uint.MaxValue; return (uint)Environment.TickCount - l.dwTime; }
+}
+'@
+while ($true) { [Console]::Out.WriteLine([TickIdle]::Ms()); [Console]::Out.Flush(); Start-Sleep -Seconds 5 }`;
+  let latest = null, alive = true;
+  try {
+    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    let buf = '';
+    ps.stdout.on('data', (d) => {
+      buf += d;
+      const lines = buf.split(/\r?\n/); buf = lines.pop();
+      for (const l of lines) if (/^\d+$/.test(l.trim()) && Number(l) !== 4294967295) latest = { ms: Number(l), at: Date.now() };
+    });
+    ps.on('error', () => { alive = false; });
+    ps.on('exit', () => { alive = false; });
+    process.on('exit', () => { try { ps.kill(); } catch { /* gone */ } });
+  } catch { return null; }
+  return async () => {
+    if (!alive || !latest) return null;
+    return latest.ms + (Date.now() - latest.at);
+  };
+}
+
+/** What the daemon knows about presence: the moments of last input, kept for an hour. */
+const PRESENCE = { inputs: null, since: Date.now(), sampler: undefined, misses: 0 };
+
+async function samplePresence(cfg) {
+  if (PRESENCE.sampler === undefined) PRESENCE.sampler = idleSampler();
+  if (!PRESENCE.sampler) return;
+  const idle = await PRESENCE.sampler().catch(() => null);
+  if (idle == null || !Number.isFinite(idle) || idle < 0) {
+    // A system that never answers is one that cannot: stop asking, count as before.
+    if (PRESENCE.inputs == null && ++PRESENCE.misses >= 6) PRESENCE.sampler = null;
+    return;
+  }
+  const now = Date.now();
+  const at = now - idle;
+  if (PRESENCE.inputs == null) { PRESENCE.inputs = []; PRESENCE.since = now; }
+  const last = PRESENCE.inputs.at(-1);
+  if (last == null || at - last > 1000) PRESENCE.inputs.push(at);
+  const keep = now - 60 * 60_000 - cfg.presence_ms;
+  while (PRESENCE.inputs.length > 1 && PRESENCE.inputs[1] < keep) PRESENCE.inputs.shift();
+}
+
+const presentNow = (cfg) => (ts) => isPresent(PRESENCE.inputs, PRESENCE.since, ts, cfg);
+
+/**
+ * Whether this computer is a virtual machine, from what the system says about
+ * its own hardware: the maker and model name, nothing else. Sent once a day
+ * with the profile, as a yes or no; a VM is not refused, it is something the
+ * owner sees before paying out.
+ */
+export function looksVirtual(text) {
+  return /virtual|vmware|virtualbox|kvm|qemu|xen|parallels|hyper-v|bochs|bhyve|utm/i.test(String(text ?? ''));
+}
+
+let VM;   // asked once per daemon: the hardware does not change under it
+function isVirtualMachine() {
+  try {
+    const os = platform();
+    if (os === 'darwin') {
+      return execFileSync('sysctl', ['-n', 'kern.hv_vmm_present'], { encoding: 'utf8', timeout: 2000 }).trim() === '1';
+    }
+    if (os === 'win32') {
+      return looksVirtual(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '$c = Get-CimInstance Win32_ComputerSystem; $c.Manufacturer + "|" + $c.Model'],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true }));
+    }
+    if (os === 'linux') {
+      const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
+      return looksVirtual(read('/sys/class/dmi/id/sys_vendor') + read('/sys/class/dmi/id/product_name'));
+    }
+  } catch { /* cannot tell */ }
+  return null;
 }
 
 // ---------------------------------------------------------------- the daemon
@@ -555,7 +708,7 @@ const AGENT_TAGS = new Set(['cc', 'cd', 'cx', 'xd', 'cu', 'dv', 'oc']);
  * else. Used to show people ads in their language, and to count how many
  * people use which tools. No name, no path, no text from any conversation.
  */
-export function machineProfile(now = Date.now(), env = process.env, activityDir = P.activity) {
+export function machineProfile(now = Date.now(), env = process.env, activityDir = P.activity, traits = { vm: null, presence: null }) {
   const intl = Intl.DateTimeFormat().resolvedOptions();
   let locale = intl.locale || '';
   // A Mac app started at login has no LANG; the system's own setting is the truth there.
@@ -578,6 +731,8 @@ export function machineProfile(now = Date.now(), env = process.env, activityDir 
   const release = readJson(P.update, null)?.release;
   return {
     os,
+    vm: traits.vm,
+    presence: traits.presence,
     locale: /^[A-Za-z0-9_@.-]{2,35}$/.test(locale) ? locale : null,
     tz: /^[A-Za-z0-9_+\-/]{1,64}$/.test(intl.timeZone ?? '') ? intl.timeZone : null,
     client: typeof release === 'string' ? release.slice(0, 12) : null,
@@ -590,7 +745,8 @@ async function reportProfile(cfg, device, now = Date.now()) {
   const last = readJson(P.profile, null);
   // Looked at hourly at most, and sent when a day has passed or something changed.
   if (last && now - (last.checked ?? last.at ?? 0) < 3_600_000) return;
-  const profile = machineProfile(now);
+  VM ??= isVirtualMachine();
+  const profile = machineProfile(now, process.env, P.activity, { vm: VM, presence: PRESENCE.inputs != null });
   const sig = JSON.stringify({ ...profile, agents: Object.keys(profile.agents).sort() });
   if (last && now - (last.at ?? 0) < 86_400_000 && last.sig === sig) { writeJson(P.profile, { ...last, checked: now }); return; }
   const res = await request(cfg, 'POST', '/devices/profile', profile, device.token);
@@ -604,7 +760,7 @@ async function cycle(cfg, device, cycleNo) {
 
   const ticks = takeTicks();
   if (ticks.length) {
-    const { items, carry } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now);
+    const { items, carry } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now, presentNow(cfg));
     writeJson(P.carry, carry);
     if (items.length) {
       const pending = readJson(P.pending, null) ?? { since: now, items: [] };
@@ -704,6 +860,8 @@ async function main() {
   let cfg = loadConfig();
   const device = loadDevice();
   let lastTickSeen = Date.now();
+  let lastSample = 0;
+  await samplePresence(cfg).catch(() => {});
 
   for (let n = 1; ; n++) {
     try {
@@ -739,6 +897,7 @@ async function main() {
     while (Date.now() < until) {
       await sleep(Math.min(1000, until - Date.now()));
       try { rotateLocally(); } catch { /* the next cycle rotates anyway */ }
+      if (Date.now() - lastSample >= cfg.presence_sample_ms) { lastSample = Date.now(); await samplePresence(cfg).catch(() => {}); }
       const t = Date.now();
       if (lineEndingSoon(t, cfg) && t - lastFetchAt > 10_000 && t - lastEarlyAt > 10_000) { lastEarlyAt = t; break; }
     }
