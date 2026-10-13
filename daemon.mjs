@@ -10,7 +10,7 @@
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync, statSync, realpathSync, chmodSync, copyFileSync, readdirSync } from 'node:fs';
 import { homedir, platform, arch } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 
@@ -222,12 +222,12 @@ export function mergeItems(prev, items) {
 
 /**
  * Which kind of place drew the line, from the stream's own prefix: the editor
- * writes `vsc:`, the desktop strip `dsk:`, the Claude Code mod `mod:`, and the
- * terminal status line the bare session id. Read before the id is hashed; the
- * id itself never leaves.
+ * writes `vsc:`, the desktop strip `dsk:`, the Claude Code mod `mod:`, the
+ * OpenCode TUI `oc:`, and the terminal status line the bare session id. Read
+ * before the id is hashed; the id itself never leaves.
  */
 export function surfaceOf(sid) {
-  const m = /^(vsc|dsk|mod):/.exec(String(sid ?? ''));
+  const m = /^(vsc|dsk|mod|oc):/.exec(String(sid ?? ''));
   return m ? m[1] : 'term';
 }
 
@@ -1030,6 +1030,12 @@ export function installedFiles(home, os = platform(), running = process.argv[1])
     { name: 'daemon.mjs', dest: at('daemon.mjs'), always: true, check: 'node', mode: 0o755, from: existsSync(at('daemon.mjs')) ? at('daemon.mjs') : running },
     { name: 'hook.mjs', dest: at('hook.mjs'), check: 'node' },
     { name: 'opencode-plugin.js', dest: at('opencode-plugin.js'), check: 'node' },
+    // OpenCode v2 plugin (server + TUI share shared.js). TypeScript/TSX have
+    // no `node --check` gate: the hash check is the gate for them.
+    { name: 'opencode/tick/index.ts', dest: join(home, 'opencode', 'tick', 'index.ts') },
+    { name: 'opencode/tick/tui.tsx', dest: join(home, 'opencode', 'tick', 'tui.tsx') },
+    { name: 'opencode/tick/shared.js', dest: join(home, 'opencode', 'tick', 'shared.js'), check: 'node' },
+    { name: 'opencode/tick/package.json', dest: join(home, 'opencode', 'tick', 'package.json') },
     { name: 'install-windows.mjs', dest: at('install-windows.mjs'), check: 'node' },
     { name: 'statusline.sh', dest: at('statusline.sh'), check: 'sh', mode: 0o755 },
     { name: 'nojq.sh', dest: at('nojq.sh'), check: 'sh', mode: 0o755 },
@@ -1127,6 +1133,7 @@ async function selfUpdate(cfg, device, now = Date.now()) {
       if (createHash('sha256').update(body).digest('hex') !== r.json.files[name]) throw new Error(`${name}: not the file the release names`);
       // Under its own name, in a folder of its own: node tells a module by its extension.
       const tmp = join(dir, name);
+      mkdirSync(dirname(tmp), { recursive: true });
       writeFileSync(tmp, body);
       const f = files.find((x) => x.name === name);
       if (f.check === 'node') execFileSync(process.execPath, ['--check', tmp], { stdio: 'ignore', timeout: 10_000 });
@@ -1142,12 +1149,13 @@ async function selfUpdate(cfg, device, now = Date.now()) {
   mkdirSync(prev, { recursive: true });
   const done = readJson(P.updated, {}) ?? {};
   for (const f of ready) {
-    try { if (existsSync(f.dest)) copyFileSync(f.dest, join(prev, f.name)); } catch { /* a backup is a convenience */ }
+    try { if (existsSync(f.dest)) { mkdirSync(dirname(join(prev, f.name)), { recursive: true }); copyFileSync(f.dest, join(prev, f.name)); } } catch { /* a backup is a convenience */ }
     if (f.kind === 'win-exe') {
       // A running program cannot be overwritten on Windows, but it can be renamed.
       try { unlinkSync(`${f.dest}.old`); } catch { /* still running, or not there */ }
       try { renameSync(f.dest, `${f.dest}.old`); } catch { /* not running */ }
     }
+    try { mkdirSync(dirname(f.dest), { recursive: true }); } catch { /* exists */ }
     renameSync(f.tmp, f.dest);
     if (f.mode && platform() !== 'win32') { try { chmodSync(f.dest, f.mode); } catch { /* keeps its mode */ } }
     done[f.name] = f.hash;

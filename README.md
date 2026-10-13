@@ -20,7 +20,7 @@ less tick-install.sh
 sh tick-install.sh
 ```
 
-Either way it downloads six files — on a Mac, also the desktop satellite and its icon —
+Either way it downloads the client's files — on a Mac, also the desktop satellite and its icon —
 checks them against published `SHA256SUMS`, and stops without installing anything if a
 checksum does not match. It needs no root. From a clone, skip the download:
 `cd client && ./install.sh`. On a Mac, `--no-desktop` leaves the desktop satellite out.
@@ -67,7 +67,7 @@ Only what works today gets a yes. No roadmap entries in this table.
 | Codex in the VS Code panel | **Yes**, the same extension. Codex asks you to approve our hook once, with `/hooks` |
 | The Codex app, macOS and Windows | **Yes**, the desktop strip over its window. Codex asks you to review our hook once |
 | Cursor's agent, macOS and Windows | **Yes**, the desktop strip over its window, from Cursor's own hooks |
-| OpenCode | Not yet — the plugin reports its turns; nothing draws them yet |
+| OpenCode | **Yes**, through the TICK plugin: the line in the session footer while the model works, `oc` ticks counted like every other surface (`/tick-dashboard` opens earnings) |
 | Codex CLI | No. Codex's `[tui] status_line` takes only its own built-in fields; there is no external-command hook and no plugin surface. Nothing to install into, and we will not patch it. Two upstream requests are open for the mechanism, and contributing it is how this changes |
 
 ## What is sent, and what is not

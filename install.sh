@@ -54,6 +54,14 @@ done
 chmod +x "$TICK_HOME/statusline.sh" "$TICK_HOME/daemon.mjs"
 # Optional, so an installer fetched by an older bootstrap still works.
 [ -f "$SRC/opencode-plugin.js" ] && cp "$SRC/opencode-plugin.js" "$TICK_HOME/opencode-plugin.js"
+# OpenCode v2 plugin (server + TICK footer in the TUI). Optional for the same
+# reason: only installed where OpenCode has been run (see below).
+if [ -d "$SRC/opencode/tick" ]; then
+  mkdir -p "$TICK_HOME/opencode/tick"
+  for f in index.ts tui.tsx shared.js package.json; do
+    [ -f "$SRC/opencode/tick/$f" ] && cp "$SRC/opencode/tick/$f" "$TICK_HOME/opencode/tick/$f"
+  done
+fi
 
 # The Claude desktop app runs hooks but never a status line, so on a Mac the
 # satellite draws the line there and the hook is its only signal.
@@ -204,14 +212,27 @@ if [ -d "$HOME/.cursor" ]; then
 fi
 
 # --- OpenCode ----------------------------------------------------------------
-# No command hooks there; a plugin file of ours in its plugins folder writes the
-# same three-field note. Only where OpenCode has been run.
+# v1: a plugin file of ours in its plugins folder writes the same three-field
+# note. v2: a plugin directory of ours (server + the TUI footer line).
+# Only where OpenCode has been run.
 OPENCODE_PLUGIN="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/tick.js"
 OPENCODE_ADDED=0
 if [ -d "$(dirname "$(dirname "$OPENCODE_PLUGIN")")" ] && [ -f "$TICK_HOME/opencode-plugin.js" ]; then
   mkdir -p "$(dirname "$OPENCODE_PLUGIN")"
   cmp -s "$TICK_HOME/opencode-plugin.js" "$OPENCODE_PLUGIN" 2>/dev/null || cp "$TICK_HOME/opencode-plugin.js" "$OPENCODE_PLUGIN"
   OPENCODE_ADDED=1
+fi
+OPENCODE_DIR="$(dirname "$OPENCODE_PLUGIN")/tick"
+OPENCODE_V2_ADDED=0
+if [ -d "$(dirname "$OPENCODE_DIR")" ] && [ -d "$TICK_HOME/opencode/tick" ]; then
+  mkdir -p "$OPENCODE_DIR"
+  for f in index.ts tui.tsx shared.js package.json; do
+    if [ -f "$TICK_HOME/opencode/tick/$f" ]; then
+      cmp -s "$TICK_HOME/opencode/tick/$f" "$OPENCODE_DIR/$f" 2>/dev/null \
+        || cp "$TICK_HOME/opencode/tick/$f" "$OPENCODE_DIR/$f" || true
+    fi
+  done
+  OPENCODE_V2_ADDED=1
 fi
 
 # A second install must not forget the first. The manifest's backup is what
@@ -236,12 +257,14 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --arg settings "$SETTINGS" --arg hook "$HOOK_CMD" --argjson hook_added "$HOOK_ADDED" \
       --arg codex "$CODEX_CONFIG" --argjson codex_added "$CODEX_ADDED" --argjson heartbeat_added "$HEARTBEAT_ADDED" \
       --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
+      --arg opencode_dir "$OPENCODE_DIR" --argjson opencode_v2_added "$OPENCODE_V2_ADDED" \
       --arg cursor "$CURSOR_HOOKS" --arg cursor_cmd "$CURSOR_CMD" --argjson cursor_added "$CURSOR_ADDED" \
   '{backup: $backup, settings: $settings, wrote_hash: $hash, had_file: ($had_file == 1), had_field: ($had_field == 1),
     hook: (if $hook_added == 1 then $hook else null end),
     heartbeat: (if $heartbeat_added == 1 then $hook else null end),
     codex_config: $codex, codex_added: ($codex_added == 1),
     opencode_plugin: (if $opencode_added == 1 then $opencode else null end),
+    opencode_dir: (if $opencode_v2_added == 1 then $opencode_dir else null end),
     cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1)}' \
   > "$TICK_HOME/install.manifest.json"
 

@@ -14,4 +14,8 @@ mkdir -p "$SRC/vendor"
 for f in daemon.mjs hook.mjs opencode-plugin.js; do
   cp "$SRC/../$f" "$SRC/vendor/$f"
 done
-printf 'vendor: daemon.mjs, hook.mjs and opencode-plugin.js copied from client/\n'
+mkdir -p "$SRC/vendor/opencode/tick"
+for f in index.ts tui.tsx shared.js package.json; do
+  [ -f "$SRC/../opencode/tick/$f" ] && cp "$SRC/../opencode/tick/$f" "$SRC/vendor/opencode/tick/$f"
+done
+printf 'vendor: daemon.mjs, hook.mjs, opencode-plugin.js and opencode/tick/ copied from client/\n'

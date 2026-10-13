@@ -111,6 +111,16 @@ NODE
     rm -f "$OPENCODE_PLUGIN"
     say 'removed our OpenCode plugin'
   fi
+  OPENCODE_DIR=$(jq -r '.opencode_dir // empty' "$MANIFEST")
+  if [ -n "$OPENCODE_DIR" ] && [ -d "$OPENCODE_DIR" ] && [ -d "$TICK_HOME/opencode/tick" ]; then
+    for f in index.ts tui.tsx shared.js package.json; do
+      if [ -f "$OPENCODE_DIR/$f" ] && cmp -s "$OPENCODE_DIR/$f" "$TICK_HOME/opencode/tick/$f" 2>/dev/null; then
+        rm -f "$OPENCODE_DIR/$f"
+      fi
+    done
+    rmdir "$OPENCODE_DIR" 2>/dev/null || true
+    say 'removed our OpenCode v2 plugin'
+  fi
 fi
 
 # --- restore settings.json ---------------------------------------------------
