@@ -10,7 +10,7 @@
 #   less tick-install.sh
 #   sh tick-install.sh
 #
-# This script downloads the client's files (six, plus the desktop satellite on
+# This script downloads the client's files (plus the desktop satellite on
 # a Mac), checks them against published checksums, and runs the real installer.
 # It needs no root. Outside ~/.tick it touches ~/.claude/settings.json, backed
 # up first, and on a Mac one login item for the satellite. install.sh says
@@ -31,7 +31,7 @@ if [ -z "$REF" ] && [ -z "${TICK_BASE:-}" ] && command -v curl >/dev/null 2>&1; 
 fi
 REF="${REF:-main}"
 BASE="${TICK_BASE:-https://raw.githubusercontent.com/$REPO/$REF}"
-FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js install.sh uninstall.sh"
+FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js opencode/tick/index.ts opencode/tick/tui.tsx opencode/tick/shared.js opencode/tick/package.json install.sh uninstall.sh"
 # The desktop satellite is a Mac program; nobody else needs to download it.
 [ "$(uname -s)" = Darwin ] && FILES="$FILES tick-satellite-macos TICK.icns"
 

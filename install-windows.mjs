@@ -55,7 +55,8 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const SETTINGS = join(CLAUDE_DIR, 'settings.json');
 const MANIFEST = join(HOME, 'install.manifest.json');
 const EXE = join(HOME, 'tick-satellite.exe');
-const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'tick-satellite-windows.exe', 'install-windows.mjs'];
+const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'tick-satellite-windows.exe', 'install-windows.mjs',
+  'opencode/tick/index.ts', 'opencode/tick/tui.tsx', 'opencode/tick/shared.js', 'opencode/tick/package.json'];
 const CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const CODEX_CONFIG = join(CODEX_DIR, 'config.toml');
 const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
@@ -241,6 +242,10 @@ async function install() {
   writeFileSync(join(HOME, 'daemon.mjs'), bodies.get('daemon.mjs'));
   writeFileSync(join(HOME, 'hook.mjs'), bodies.get('hook.mjs'));
   writeFileSync(join(HOME, 'opencode-plugin.js'), bodies.get('opencode-plugin.js'));
+  mkdirSync(join(HOME, 'opencode', 'tick'), { recursive: true });
+  for (const name of ['opencode/tick/index.ts', 'opencode/tick/tui.tsx', 'opencode/tick/shared.js', 'opencode/tick/package.json']) {
+    writeFileSync(join(HOME, ...name.split('/')), bodies.get(name));
+  }
   writeFileSync(EXE, bodies.get('tick-satellite-windows.exe'));
   writeFileSync(join(HOME, 'install-windows.mjs'), bodies.get('install-windows.mjs'));
   // Started at login there is no PATH guarantee; the satellite reads this to
@@ -327,12 +332,22 @@ async function install() {
     }
   }
 
-  // OpenCode: one plugin file, where OpenCode has been run.
+  // OpenCode v1: one plugin file, where OpenCode has been run.
   let opencode = prev?.opencode_plugin ?? null;
   if (existsSync(join(OPENCODE_PLUGIN, '..', '..'))) {
     mkdirSync(join(OPENCODE_PLUGIN, '..'), { recursive: true });
     writeFileSync(OPENCODE_PLUGIN, bodies.get('opencode-plugin.js'));
     opencode = OPENCODE_PLUGIN;
+  }
+  // OpenCode v2: a plugin directory (server + the TUI footer line).
+  const OPENCODE_DIR = join(OPENCODE_PLUGIN, '..', 'tick');
+  let opencodeDir = prev?.opencode_dir ?? null;
+  if (existsSync(join(OPENCODE_PLUGIN, '..', '..'))) {
+    mkdirSync(OPENCODE_DIR, { recursive: true });
+    for (const name of ['opencode/tick/index.ts', 'opencode/tick/tui.tsx', 'opencode/tick/shared.js', 'opencode/tick/package.json']) {
+      writeFileSync(join(OPENCODE_DIR, name.split('/').pop()), bodies.get(name));
+    }
+    opencodeDir = OPENCODE_DIR;
   }
   writeFileSync(MANIFEST, `${JSON.stringify({
     settings: SETTINGS,
@@ -346,6 +361,7 @@ async function install() {
     cursor_added: cursorAdded,
     codex_added: codexAdded,
     opencode_plugin: opencode,
+    opencode_dir: opencodeDir,
   }, null, 2)}\n`);
 
   if (SYSTEM) {
@@ -422,6 +438,10 @@ function uninstall() {
   if (m?.opencode_plugin && existsSync(m.opencode_plugin)) {
     rmSync(m.opencode_plugin, { force: true });
     say('removed our OpenCode plugin');
+  }
+  if (m?.opencode_dir && existsSync(m.opencode_dir)) {
+    rmSync(m.opencode_dir, { recursive: true, force: true });
+    say('removed our OpenCode v2 plugin');
   }
   rmSync(HOME, { recursive: true, force: true });
   say('removed. Nothing of TICK is left on this machine.');

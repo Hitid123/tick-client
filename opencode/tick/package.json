@@ -1,0 +1,14 @@
+{
+  "name": "tick-opencode-plugin",
+  "version": "0.1.0",
+  "description": "TICK sponsored line for OpenCode: activity marks (server) and the session footer line (TUI).",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.tsx"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "2.0.16"
+  }
+}

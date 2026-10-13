@@ -244,9 +244,14 @@ function ensureHome(context, log) {
       ['daemon.mjs', P.daemon, false],
       ['hook.mjs', P.hook, true],
       ['opencode-plugin.js', P.opencodePlugin, true],
+      ['opencode/tick/index.ts', path.join(HOME, 'opencode', 'tick', 'index.ts'), true],
+      ['opencode/tick/tui.tsx', path.join(HOME, 'opencode', 'tick', 'tui.tsx'), true],
+      ['opencode/tick/shared.js', path.join(HOME, 'opencode', 'tick', 'shared.js'), true],
+      ['opencode/tick/package.json', path.join(HOME, 'opencode', 'tick', 'package.json'), true],
     ]) {
-      const src = path.join(context.extensionPath, 'vendor', name);
+      const src = path.join(context.extensionPath, 'vendor', ...name.split('/'));
       if (!fs.existsSync(src)) continue;
+      try { fs.mkdirSync(path.dirname(dest), { recursive: true }); } catch { /* exists */ }
 
       const shipped = fs.readFileSync(src);
       const shippedHash = sha256(shipped);
@@ -428,14 +433,35 @@ function installDevinHooks(log) {
   }
 }
 
-/** OpenCode: our plugin file in its plugins folder, a copy of ~/.tick's. */
+/** OpenCode: our plugins in its plugins folder, copies of ~/.tick's.
+ *  v1 is one file (activity marks); v2 is a directory (server + TUI footer). */
 function installOpenCodePlugin(log) {
   try {
     const ours = fs.readFileSync(P.opencodePlugin);
-    if (fs.existsSync(OPENCODE_PLUGIN) && fs.readFileSync(OPENCODE_PLUGIN).equals(ours)) return { ok: true, already: true };
-    fs.mkdirSync(path.dirname(OPENCODE_PLUGIN), { recursive: true });
-    fs.writeFileSync(OPENCODE_PLUGIN, ours);
-    log('OpenCode activity plugin installed');
+    const v1ok = fs.existsSync(OPENCODE_PLUGIN) && fs.readFileSync(OPENCODE_PLUGIN).equals(ours);
+    if (!v1ok) {
+      fs.mkdirSync(path.dirname(OPENCODE_PLUGIN), { recursive: true });
+      fs.writeFileSync(OPENCODE_PLUGIN, ours);
+      log('OpenCode activity plugin installed');
+    }
+    const dir = path.join(path.dirname(OPENCODE_PLUGIN), 'tick');
+    const files = ['index.ts', 'tui.tsx', 'shared.js', 'package.json'];
+    let v2ok = true;
+    for (const name of files) {
+      try {
+        const src = fs.readFileSync(path.join(HOME, 'opencode', 'tick', name));
+        const dest = path.join(dir, name);
+        if (!(fs.existsSync(dest) && fs.readFileSync(dest).equals(src))) {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(dest, src);
+          v2ok = false;
+        }
+      } catch {
+        v2ok = false;
+      }
+    }
+    if (!v2ok) log('OpenCode v2 plugin installed');
+    if (v1ok && v2ok) return { ok: true, already: true };
     return { ok: true, already: false };
   } catch (e) {
     log(`OpenCode plugin install failed: ${e && e.message}`);
@@ -497,13 +523,27 @@ function uninstallHooks(log) {
     } catch (e) { log(`Devin hook removal failed: ${e && e.message}`); ok = false; }
   }
 
-  // Only our own file: the same bytes we put there.
+  // Only our own files: the same bytes we put there.
   try {
     if (fs.existsSync(OPENCODE_PLUGIN) && fs.existsSync(P.opencodePlugin)
         && fs.readFileSync(OPENCODE_PLUGIN).equals(fs.readFileSync(P.opencodePlugin))) {
       fs.unlinkSync(OPENCODE_PLUGIN);
       log('OpenCode activity plugin removed');
     }
+    const dir = path.join(path.dirname(OPENCODE_PLUGIN), 'tick');
+    for (const name of ['index.ts', 'tui.tsx', 'shared.js', 'package.json']) {
+      try {
+        const src = path.join(HOME, 'opencode', 'tick', name);
+        const dest = path.join(dir, name);
+        if (fs.existsSync(dest) && fs.existsSync(src) && fs.readFileSync(dest).equals(fs.readFileSync(src))) {
+          fs.unlinkSync(dest);
+        }
+      } catch { /* keep going */ }
+    }
+    try {
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      log('OpenCode v2 plugin removed');
+    } catch { /* not empty or already gone */ }
   } catch (e) { log(`OpenCode plugin removal failed: ${e && e.message}`); ok = false; }
 
   try { fs.unlinkSync(P.installed); } catch { /* never written */ }
@@ -526,7 +566,8 @@ function registered() {
     cu: core.cursorHooksInstalled(readJson(CURSOR_HOOKS, null), hookCommand('cu')),
     dv: core.hooksInstalled(readJson(DEVIN_CONFIG, {}) || {}, hookCommand('cc'))
       || core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
-    oc: fs.existsSync(OPENCODE_PLUGIN),
+    oc: fs.existsSync(OPENCODE_PLUGIN)
+      || fs.existsSync(path.join(path.dirname(OPENCODE_PLUGIN), 'tick', 'index.ts')),
   };
 }
 
