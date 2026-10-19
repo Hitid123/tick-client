@@ -60,7 +60,7 @@ const WORK_STARTS = 'UserPromptSubmit';
  */
 const AGENTS = {
   cc: 'Claude Code', cx: 'Codex', cu: 'Cursor', dv: 'Devin', oc: 'OpenCode',
-  cd: 'Claude', xd: 'Codex',
+  cd: 'Claude', xd: 'Codex', ag: 'Antigravity', cl: 'Cline',
 };
 
 /**
@@ -72,6 +72,8 @@ function hostOf(appName) {
   const n = String(appName ?? '').toLowerCase();
   if (n.includes('cursor')) return 'cursor';
   if (n.includes('devin') || n.includes('windsurf')) return 'devin';
+  // Google's editor, a VS Code build; its agent's hooks write the `ag` mark (2026-10-16).
+  if (n.includes('antigravity')) return 'antigravity';
   return 'vscode';
 }
 
@@ -95,6 +97,9 @@ function countsInEditor(mark, host = 'vscode', platform = 'darwin') {
   const strip = platform === 'darwin' || platform === 'win32';
   if (mark.ag === 'cu') return host === 'cursor' && !strip;
   if (mark.ag === 'dv') return host === 'devin' && !strip;
+  // Antigravity's own agent is on screen only in Antigravity, and no strip of
+  // ours draws over it, so its window counts it on every system.
+  if (mark.ag === 'ag') return host === 'antigravity';
   return true;
 }
 
@@ -849,6 +854,76 @@ function cursorHooksInstalled(file, command, events = CURSOR_EVENTS) {
   return events.every((e) => Array.isArray(hooks[e]) && hooks[e].some((h) => h && h.command === command));
 }
 
+// ------------------------------------------------------------- Antigravity
+
+/**
+ * Antigravity keeps hooks in ~/.gemini/config/hooks.json, as named groups:
+ * { "<name>": { "<Event>": [handler, …] }, … } (its docs, 2026-10-16). Ours is
+ * the group named "tick", so adding and removing never touches anyone else's.
+ * Its payload names no event, so the event goes on the command line.
+ *
+ *   PreInvocation   before each model call: a turn running
+ *   PostInvocation  after each model call: still running (a heartbeat)
+ *   Stop            the agent stopped
+ */
+const ANTIGRAVITY_EVENTS = ['PreInvocation', 'PostInvocation', 'Stop'];
+const ANTIGRAVITY_GROUP = 'tick';
+
+function antigravityGroup(command) {
+  return Object.fromEntries(ANTIGRAVITY_EVENTS.map((e) => [e, [{ type: 'command', command: `${command} ${e}`, timeout: 5 }]]));
+}
+
+function antigravityHooksInstalled(file, command) {
+  const g = file && typeof file === 'object' ? file[ANTIGRAVITY_GROUP] : null;
+  if (!g || typeof g !== 'object') return false;
+  return ANTIGRAVITY_EVENTS.every((e) => Array.isArray(g[e]) && g[e].some((h) => h && h.command === `${command} ${e}`));
+}
+
+function addAntigravityHooks(file, command) {
+  const base = file && typeof file === 'object' && !Array.isArray(file) ? file : {};
+  const prev = base[ANTIGRAVITY_GROUP];
+  if (prev && !isOurAntigravityGroup(prev)) throw new Error('a hook group named "tick" that is not ours is already there');
+  return { file: { ...base, [ANTIGRAVITY_GROUP]: antigravityGroup(command) }, changed: !antigravityHooksInstalled(base, command) };
+}
+
+/** Ours: every handler in it runs our hook script. */
+function isOurAntigravityGroup(g) {
+  if (!g || typeof g !== 'object') return false;
+  const handlers = Object.values(g).filter(Array.isArray).flat();
+  return handlers.length > 0 && handlers.every((h) => h && typeof h.command === 'string' && /hook\.mjs"? ag /.test(h.command));
+}
+
+function removeAntigravityHooks(file) {
+  if (!file || typeof file !== 'object' || !isOurAntigravityGroup(file[ANTIGRAVITY_GROUP])) return { file, changed: false };
+  const next = { ...file };
+  delete next[ANTIGRAVITY_GROUP];
+  return { file: next, changed: true };
+}
+
+// ------------------------------------------------------------------- Cline
+
+/**
+ * Cline runs a hook as an executable file named after its event, from its
+ * hooks folder (macOS and Linux only; the user turns hooks on in Cline's
+ * settings). One file per event, so a file of ours is written only where no
+ * file of that name exists, and it carries a marker line so taking it back
+ * takes back only ours.
+ *
+ *   TaskStart, TaskResume, UserPromptSubmit   a task running
+ *   PostToolUse                               still running (a heartbeat)
+ *   TaskComplete, TaskCancel                  stopped
+ */
+const CLINE_EVENTS = ['TaskStart', 'TaskResume', 'UserPromptSubmit', 'PostToolUse', 'TaskComplete', 'TaskCancel'];
+const CLINE_MARKER = '# TICK activity hook';
+
+function clineHookScript(command, event) {
+  return `#!/bin/sh\n${CLINE_MARKER}: writes "a task is running" for TICK and nothing else. Removed by "TICK: Turn off".\nexec ${command} ${event}\n`;
+}
+
+function isOurClineHook(text) {
+  return typeof text === 'string' && text.includes(CLINE_MARKER);
+}
+
 function addCursorHooks(file, command, events = CURSOR_EVENTS) {
   const next = { ...(file && typeof file === 'object' && !Array.isArray(file) ? file : {}) };
   if (typeof next.version !== 'number') next.version = 1;
@@ -897,6 +972,14 @@ module.exports = {
   hostOf,
   countsInEditor,
   CURSOR_EVENTS,
+  ANTIGRAVITY_EVENTS,
+  antigravityHooksInstalled,
+  addAntigravityHooks,
+  removeAntigravityHooks,
+  CLINE_EVENTS,
+  CLINE_MARKER,
+  clineHookScript,
+  isOurClineHook,
   cursorHooksInstalled,
   addCursorHooks,
   removeCursorHooks,

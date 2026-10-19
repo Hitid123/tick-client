@@ -60,11 +60,19 @@ const DEVIN_CONFIG = process.platform === 'win32'
 const OPENCODE_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
 const OPENCODE_PLUGIN = path.join(OPENCODE_DIR, 'plugins', 'tick.js');
 
+// Antigravity: hooks in ~/.gemini/config/hooks.json. Cline: one executable per
+// event in its hooks folder; its docs name two folders (Hooks, Rules/Hooks),
+// so ours goes in both, and a second run of the same note is harmless.
+const ANTIGRAVITY_HOOKS = path.join(os.homedir(), '.gemini', 'config', 'hooks.json');
+const CLINE_HOOK_DIRS = [path.join(os.homedir(), 'Documents', 'Cline', 'Hooks'), path.join(os.homedir(), 'Documents', 'Cline', 'Rules', 'Hooks')];
+const CLINE_EXTENSION = 'saoudrizwan.claude-dev';
+
 /** Every agent we can register with, and the file each one keeps it in. */
-const AGENT_TAGS = ['cc', 'cx', 'cu', 'dv', 'oc'];
+const AGENT_TAGS = ['cc', 'cx', 'cu', 'dv', 'oc', 'ag', 'cl'];
 const AGENT_FILES = {
   cc: '~/.claude/settings.json', cx: '~/.codex/config.toml', cu: '~/.cursor/hooks.json',
   dv: '~/.config/devin/config.json', oc: '~/.config/opencode/plugins/tick.js',
+  ag: '~/.gemini/config/hooks.json', cl: '~/Documents/Cline/Hooks',
 };
 
 const DECLINED = 'tick.setUpDeclined';
@@ -109,6 +117,9 @@ function agentsPresent() {
     cu: HOST === 'cursor',
     dv: HOST === 'devin',
     oc: fs.existsSync(OPENCODE_DIR),
+    ag: HOST === 'antigravity',
+    // Cline's hooks run on macOS and Linux only (its docs, 2026-10-16).
+    cl: process.platform !== 'win32' && Boolean(vscode.extensions.getExtension(CLINE_EXTENSION)),
   };
 }
 
@@ -443,7 +454,56 @@ function installOpenCodePlugin(log) {
   }
 }
 
+/** Antigravity: our own named group in its hooks file, nobody else's touched. */
+function installAntigravityHooks(log) {
+  const command = hookCommand('ag');
+  const existing = readJson(ANTIGRAVITY_HOOKS, null);
+  if (core.antigravityHooksInstalled(existing, command)) return { ok: true, already: true };
+  try {
+    fs.mkdirSync(path.dirname(ANTIGRAVITY_HOOKS), { recursive: true });
+    if (fs.existsSync(ANTIGRAVITY_HOOKS)) {
+      if (existing === null) throw new Error('~/.gemini/config/hooks.json is not valid JSON; fix it first');
+      fs.copyFileSync(ANTIGRAVITY_HOOKS, path.join(HOME, `antigravity-hooks.backup.${stamp()}.json`));
+    }
+    writeJsonAtomic(ANTIGRAVITY_HOOKS, core.addAntigravityHooks(existing, command).file, true);
+    writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), antigravity: command, at: Date.now() });
+    log('Antigravity activity hook registered');
+    return { ok: true, already: false };
+  } catch (e) {
+    log(`Antigravity hook registration failed: ${e && e.message}`);
+    return { ok: false, error: e && e.message };
+  }
+}
+
+/** Cline: a small executable per event, only where no file of that name is already there. */
+function clineHooksInstalled() {
+  return core.CLINE_EVENTS.every((e) => CLINE_HOOK_DIRS.some((d) => core.isOurClineHook(readText(path.join(d, e)))));
+}
+function installClineHooks(log) {
+  if (clineHooksInstalled()) return { ok: true, already: true };
+  const command = hookCommand('cl');
+  try {
+    for (const dir of CLINE_HOOK_DIRS) {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const e of core.CLINE_EVENTS) {
+        const file = path.join(dir, e);
+        if (fs.existsSync(file) && !core.isOurClineHook(readText(file))) { log(`Cline: ${file} is someone else's; left as it is`); continue; }
+        writeTextAtomic(file, core.clineHookScript(command, e));
+        fs.chmodSync(file, 0o755);
+      }
+    }
+    writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), cline: command, at: Date.now() });
+    log('Cline activity hooks written; Cline runs them once hooks are on in its settings (Features → Hooks)');
+    return { ok: true, already: false };
+  } catch (e) {
+    log(`Cline hook install failed: ${e && e.message}`);
+    return { ok: false, error: e && e.message };
+  }
+}
+
 function installFor(agent, log) {
+  if (agent === 'ag') return installAntigravityHooks(log);
+  if (agent === 'cl') return installClineHooks(log);
   if (agent === 'cc') return installHooks(log);
   if (agent === 'cx') return installCodexHooks(log);
   if (agent === 'cu') return installCursorHooks(log);
@@ -497,6 +557,22 @@ function uninstallHooks(log) {
     } catch (e) { log(`Devin hook removal failed: ${e && e.message}`); ok = false; }
   }
 
+  const ag = readJson(ANTIGRAVITY_HOOKS, null);
+  if (ag && typeof ag === 'object') {
+    try {
+      const { file, changed } = core.removeAntigravityHooks(ag);
+      if (changed) { writeJsonAtomic(ANTIGRAVITY_HOOKS, file, true); log('Antigravity activity hook removed'); }
+    } catch (e) { log(`Antigravity hook removal failed: ${e && e.message}`); ok = false; }
+  }
+
+  // Cline: only the files that carry our marker.
+  for (const dir of CLINE_HOOK_DIRS) {
+    for (const e of core.CLINE_EVENTS) {
+      const file = path.join(dir, e);
+      try { if (core.isOurClineHook(readText(file))) { fs.unlinkSync(file); log(`Cline hook removed: ${e}`); } } catch (err) { log(`Cline hook removal failed: ${err && err.message}`); ok = false; }
+    }
+  }
+
   // Only our own file: the same bytes we put there.
   try {
     if (fs.existsSync(OPENCODE_PLUGIN) && fs.existsSync(P.opencodePlugin)
@@ -527,6 +603,8 @@ function registered() {
     dv: core.hooksInstalled(readJson(DEVIN_CONFIG, {}) || {}, hookCommand('cc'))
       || core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
     oc: fs.existsSync(OPENCODE_PLUGIN),
+    ag: core.antigravityHooksInstalled(readJson(ANTIGRAVITY_HOOKS, null), hookCommand('ag')),
+    cl: clineHooksInstalled(),
   };
 }
 

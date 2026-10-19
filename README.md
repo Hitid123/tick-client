@@ -78,7 +78,7 @@ This is the whole reason to pick us, so here it is without hedging.
 | --- | --- |
 | Your prompts | `creative_id` — which line was displayed |
 | Model responses | Number of impressions |
-| File contents, file names, paths | Aggregated display time, in milliseconds |
+| File contents, file names, paths | Aggregated display time, in milliseconds, and how much of the model's working time had no paid line (a total, to measure how much we sell) |
 | `transcript_path` and the transcript itself | `api_ms_delta` — how long the model worked |
 | Your working directory | `model.id`, e.g. `claude-opus-5` |
 | Git branches and remotes | A salted SHA-256 hash of the session id |

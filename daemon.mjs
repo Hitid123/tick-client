@@ -129,6 +129,10 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), presen
   }
 
   const items = [];
+  // Fill (2026-10-16): time the model worked with a person at the computer
+  // and no paid line to show, per session. Against active_ms it says how much
+  // of the time we could have sold we did. A sum of milliseconds, nothing else.
+  const unfilled = {};
 
   for (const [sid, raw] of bySession) {
     raw.sort((a, b) => a.ts - b.ts);
@@ -150,6 +154,9 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), presen
         const withinGap = delta > 0 && delta <= cfg.tick_max_gap_ms;
         const active = cur.ts - lastIncreaseTs <= cfg.active_window_ms;
 
+        if (cur.cid == null && prev.cid == null && withinGap && active && present(cur.ts)) {
+          unfilled[sid] = (unfilled[sid] ?? 0) + delta;
+        }
         if (sameCreative && withinGap && active && present(cur.ts)) {
           const b = (pending[cur.cid] ??= {
             rem: 0, active: 0, api: 0, first: prev.ts, last: cur.ts, model: cur.model ?? null,
@@ -196,7 +203,29 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), presen
     if (!s.last || now - s.last.ts > cfg.session_ttl_ms) delete next[sid];
   }
 
-  return { items, carry: next };
+  return { items, carry: next, unfilled };
+}
+
+/**
+ * Fill by surface, from one aggregate(): what was sold (active_ms of the
+ * items) and what was not. Only the terminal and the editor write ticks when
+ * no paid line is on screen; the desktop strip and the mod draw nothing then,
+ * so their unsold time is unknown and they are left out rather than counted
+ * as fully sold.
+ */
+export const FILL_SURFACES = ['term', 'vsc'];
+export function fillOf(items, unfilled, prev = {}) {
+  const out = Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, { ...v }]));
+  const at = (surface) => (out[surface] ??= { filled_ms: 0, unfilled_ms: 0 });
+  for (const it of items) {
+    const surface = surfaceOf(it.session_hash);
+    if (FILL_SURFACES.includes(surface)) at(surface).filled_ms += it.active_ms;
+  }
+  for (const [sid, ms] of Object.entries(unfilled ?? {})) {
+    const surface = surfaceOf(sid);
+    if (FILL_SURFACES.includes(surface)) at(surface).unfilled_ms += ms;
+  }
+  return out;
 }
 
 /** Wrap items into the wire payload. Raw session_id never leaves the machine. */
@@ -231,9 +260,10 @@ export function surfaceOf(sid) {
   return m ? m[1] : 'term';
 }
 
-export function buildBatch(items, salt) {
+export function buildBatch(items, salt, fill = null) {
   return {
     batch_id: randomUUID(),
+    ...(fill && Object.keys(fill).length ? { fill } : {}),
     items: items.map((i) => ({
       creative_id: i.creative_id,
       count: i.count,
@@ -698,7 +728,7 @@ let fetchState = { until: 0, step: 0 };
 
 // ------------------------------------------------------------- the machine
 
-const AGENT_TAGS = new Set(['cc', 'cd', 'cx', 'xd', 'cu', 'dv', 'oc']);
+const AGENT_TAGS = new Set(['cc', 'cd', 'cx', 'xd', 'cu', 'dv', 'oc', 'ag', 'cl']);
 
 /**
  * What is said about this machine, at most once a day: the system, its
@@ -760,19 +790,23 @@ async function cycle(cfg, device, cycleNo) {
 
   const ticks = takeTicks();
   if (ticks.length) {
-    const { items, carry } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now, presentNow(cfg));
+    const { items, carry, unfilled } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now, presentNow(cfg));
     writeJson(P.carry, carry);
-    if (items.length) {
+    const fill = fillOf(items, unfilled, readJson(P.pending, null)?.fill ?? {});
+    if (items.length || Object.keys(fill).length) {
       const pending = readJson(P.pending, null) ?? { since: now, items: [] };
       pending.items = mergeItems(pending.items ?? [], items);
+      pending.fill = fill;
       writeJson(P.pending, pending);
     }
   }
-  // Every few minutes what has gathered becomes one batch.
+  // Every few minutes what has gathered becomes one batch: impressions, and
+  // the fill counts even when nothing was sold, or an empty day would read as full.
   const pending = readJson(P.pending, null);
-  if (pending?.items?.length && now - (pending.since ?? 0) >= cfg.batch_every_ms) {
+  const hasFill = Object.values(pending?.fill ?? {}).some((f) => f.filled_ms + f.unfilled_ms > 0);
+  if ((pending?.items?.length || hasFill) && now - (pending.since ?? 0) >= cfg.batch_every_ms) {
     const outbox = readJson(P.outbox, []) ?? [];
-    outbox.push(buildBatch(pending.items, device.salt));
+    outbox.push(buildBatch(pending.items ?? [], device.salt, pending.fill));
     writeJson(P.outbox, outbox);
     try { unlinkSync(P.pending); } catch { /* already gone */ }
   }

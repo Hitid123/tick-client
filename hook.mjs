@@ -27,9 +27,11 @@
 //
 // Contract, in the same spirit as the status line (TZ section 2, 4.1):
 //   - no network, ever;
-//   - prints nothing on stdout, with one exception below. For UserPromptSubmit
-//     anything printed is injected into the user's conversation as context, so
-//     silence is not tidiness here, it is correctness;
+//   - prints nothing on stdout, with three exceptions below (Cursor, Cline and
+//     Antigravity each read an answer, and get the one that changes nothing).
+//     For Claude Code's UserPromptSubmit anything printed is injected into the
+//     user's conversation as context, so silence is not tidiness here, it is
+//     correctness;
 //   - ALWAYS exits 0, and never blocks a prompt or a stop. A hook that fails
 //     loudly is a hook that makes someone else's tool look broken;
 //   - writes exactly {ts, ev, ag} and never anything else.
@@ -63,8 +65,13 @@ const EVENTS = {
   UserPromptSubmit: 'UserPromptSubmit', Stop: 'Stop', SessionEnd: 'SessionEnd',
   beforeSubmitPrompt: 'UserPromptSubmit', stop: 'Stop', sessionEnd: 'SessionEnd',
   PostToolUse: 'UserPromptSubmit', postToolUse: 'UserPromptSubmit',
+  // Antigravity (2026-10-16): before and after each model call, and its Stop.
+  PreInvocation: 'UserPromptSubmit', PostInvocation: 'UserPromptSubmit',
+  // Cline: a task starting, resuming or completing; UserPromptSubmit and
+  // PostToolUse are spelled as Claude Code's.
+  TaskStart: 'UserPromptSubmit', TaskResume: 'UserPromptSubmit', TaskComplete: 'Stop', TaskCancel: 'Stop',
 };
-const HEARTBEATS = new Set(['PostToolUse', 'postToolUse']);
+const HEARTBEATS = new Set(['PostToolUse', 'postToolUse', 'PostInvocation']);
 const STARTED = Date.now();
 
 /**
@@ -77,6 +84,8 @@ const STARTED = Date.now();
  *   Claude Code says claude-desktop in CLAUDE_CODE_ENTRYPOINT inside the app.
  */
 function agentOf(arg, env, payload, raw) {
+  // Registered by name for agents that give themselves away no other way.
+  if (arg === 'ag' || arg === 'cl') return arg;
   if (payload.cursor_version || raw === 'beforeSubmitPrompt' || raw === 'stop' || raw === 'sessionEnd') return 'cu';
   if (env.DEVIN_PROJECT_DIR) return 'dv';
   if (arg === 'cx') {
@@ -115,18 +124,24 @@ try {
   // silence. Strip it, and the CRLF the same pipeline appends.
   const payload = JSON.parse(input.replace(/^\uFEFF+/, '').trim() || '{}');
 
-  const raw = String(payload.hook_event_name ?? '');
+  // Antigravity names no event in its payload, so ours says it on the command
+  // line; Cline calls it hookName.
+  const raw = String(payload.hook_event_name ?? payload.hookName ?? process.argv[3] ?? '');
   const ev = Object.prototype.hasOwnProperty.call(EVENTS, raw) ? EVENTS[raw] : '';
   const ag = agentOf(String(process.argv[2] ?? ''), process.env, payload, raw);
   if (ag === 'cu') {
     if (raw === 'beforeSubmitPrompt') process.stdout.write('{"continue":true}');
     else if (raw === 'stop') process.stdout.write('{}');
   }
+  // Cline reads an answer from every hook; this one changes nothing.
+  if (ag === 'cl') process.stdout.write('{"cancel":false}');
+  // Antigravity takes an empty object as "nothing to add".
+  if (ag === 'ag') process.stdout.write('{}');
   if (!ev) process.exit(0);
 
   // The session id becomes a file name, so anything that is not plainly an id
   // is treated as no id at all.
-  const sid = String(payload.session_id ?? payload.conversation_id ?? '');
+  const sid = String(payload.session_id ?? payload.conversation_id ?? payload.conversationId ?? payload.taskId ?? '');
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sid)) process.exit(0);
 
   const dir = join(state, 'activity');
