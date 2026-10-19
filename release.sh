@@ -9,7 +9,7 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # where the plugin is all that was installed. Always this one.
 cp daemon.mjs claude-mod/tick/runtime/daemon.mjs
 
-FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js install.sh uninstall.sh tick-satellite-macos TICK.icns tick-satellite-windows.exe install-windows.mjs"
+FILES="statusline.sh nojq.sh daemon.mjs hook.mjs opencode-plugin.js opencode-tui.js install.sh uninstall.sh tick-satellite-macos TICK.icns tick-satellite-windows.exe install-windows.mjs"
 
 if command -v shasum >/dev/null 2>&1; then
   shasum -a 256 $FILES > SHA256SUMS

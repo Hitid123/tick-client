@@ -67,7 +67,7 @@ Only what works today gets a yes. No roadmap entries in this table.
 | Codex in the VS Code panel | **Yes**, the same extension. Codex asks you to approve our hook once, with `/hooks` |
 | The Codex app, macOS and Windows | **Yes**, the desktop strip over its window. Codex asks you to review our hook once |
 | Cursor's agent, macOS and Windows | **Yes**, the desktop strip over its window, from Cursor's own hooks |
-| OpenCode | Not yet — the plugin reports its turns; nothing draws them yet |
+| OpenCode | Being tested: OpenCode 1.x draws the line itself, in the bottom row of its window, through an interface plugin of ours (`opencode-tui.js`, listed in `~/.config/opencode/tui.json`); a second plugin reports its turns |
 | Codex CLI | No. Codex's `[tui] status_line` takes only its own built-in fields; there is no external-command hook and no plugin surface. Nothing to install into, and we will not patch it. Two upstream requests are open for the mechanism, and contributing it is how this changes |
 
 ## What is sent, and what is not

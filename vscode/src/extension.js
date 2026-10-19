@@ -60,11 +60,25 @@ const DEVIN_CONFIG = process.platform === 'win32'
 const OPENCODE_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
 const OPENCODE_PLUGIN = path.join(OPENCODE_DIR, 'plugins', 'tick.js');
 
-// Antigravity: hooks in ~/.gemini/config/hooks.json. Cline: one executable per
-// event in its hooks folder; its docs name two folders (Hooks, Rules/Hooks),
-// so ours goes in both, and a second run of the same note is harmless.
+// Antigravity: hooks in ~/.gemini/config/hooks.json. Cline: one file per event
+// in <Documents>/Cline/Hooks, the Documents folder as the system names it
+// (Cline asks the same way: PowerShell on Windows, xdg-user-dir on Linux).
 const ANTIGRAVITY_HOOKS = path.join(os.homedir(), '.gemini', 'config', 'hooks.json');
-const CLINE_HOOK_DIRS = [path.join(os.homedir(), 'Documents', 'Cline', 'Hooks'), path.join(os.homedir(), 'Documents', 'Cline', 'Rules', 'Hooks')];
+const WIN = process.platform === 'win32';
+function documentsDir() {
+  try {
+    if (WIN) {
+      const out = require('child_process').execFileSync('powershell', ['-NoProfile', '-Command', '[System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::MyDocuments)'], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+      if (out) return out;
+    } else if (process.platform === 'linux') {
+      const out = require('child_process').execFileSync('xdg-user-dir', ['DOCUMENTS'], { encoding: 'utf8', timeout: 3000 }).trim();
+      if (out) return out;
+    }
+  } catch { /* fall back as Cline does */ }
+  return path.join(os.homedir(), 'Documents');
+}
+let clineDirCache = null;
+const clineHookDir = () => (clineDirCache ??= path.join(documentsDir(), 'Cline', 'Hooks'));
 const CLINE_EXTENSION = 'saoudrizwan.claude-dev';
 
 /** Every agent we can register with, and the file each one keeps it in. */
@@ -118,8 +132,7 @@ function agentsPresent() {
     dv: HOST === 'devin',
     oc: fs.existsSync(OPENCODE_DIR),
     ag: HOST === 'antigravity',
-    // Cline's hooks run on macOS and Linux only (its docs, 2026-10-16).
-    cl: process.platform !== 'win32' && Boolean(vscode.extensions.getExtension(CLINE_EXTENSION)),
+    cl: Boolean(vscode.extensions.getExtension(CLINE_EXTENSION)),
   };
 }
 
@@ -477,23 +490,22 @@ function installAntigravityHooks(log) {
 
 /** Cline: a small executable per event, only where no file of that name is already there. */
 function clineHooksInstalled() {
-  return core.CLINE_EVENTS.every((e) => CLINE_HOOK_DIRS.some((d) => core.isOurClineHook(readText(path.join(d, e)))));
+  return core.CLINE_EVENTS.every((e) => core.isOurClineHook(readText(path.join(clineHookDir(), core.clineHookName(e, WIN)))));
 }
 function installClineHooks(log) {
   if (clineHooksInstalled()) return { ok: true, already: true };
   const command = hookCommand('cl');
   try {
-    for (const dir of CLINE_HOOK_DIRS) {
-      fs.mkdirSync(dir, { recursive: true });
-      for (const e of core.CLINE_EVENTS) {
-        const file = path.join(dir, e);
-        if (fs.existsSync(file) && !core.isOurClineHook(readText(file))) { log(`Cline: ${file} is someone else's; left as it is`); continue; }
-        writeTextAtomic(file, core.clineHookScript(command, e));
-        fs.chmodSync(file, 0o755);
-      }
+    const dir = clineHookDir();
+    fs.mkdirSync(dir, { recursive: true });
+    for (const e of core.CLINE_EVENTS) {
+      const file = path.join(dir, core.clineHookName(e, WIN));
+      if (fs.existsSync(file) && !core.isOurClineHook(readText(file))) { log(`Cline: ${file} is someone else's; left as it is`); continue; }
+      writeTextAtomic(file, core.clineHookScript(command, e, WIN));
+      if (!WIN) fs.chmodSync(file, 0o755);
     }
     writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), cline: command, at: Date.now() });
-    log('Cline activity hooks written; Cline runs them once hooks are on in its settings (Features → Hooks)');
+    log(`Cline activity hooks written to ${dir}`);
     return { ok: true, already: false };
   } catch (e) {
     log(`Cline hook install failed: ${e && e.message}`);
@@ -566,11 +578,9 @@ function uninstallHooks(log) {
   }
 
   // Cline: only the files that carry our marker.
-  for (const dir of CLINE_HOOK_DIRS) {
-    for (const e of core.CLINE_EVENTS) {
-      const file = path.join(dir, e);
-      try { if (core.isOurClineHook(readText(file))) { fs.unlinkSync(file); log(`Cline hook removed: ${e}`); } } catch (err) { log(`Cline hook removal failed: ${err && err.message}`); ok = false; }
-    }
+  for (const e of core.CLINE_EVENTS) {
+    const file = path.join(clineHookDir(), core.clineHookName(e, WIN));
+    try { if (core.isOurClineHook(readText(file))) { fs.unlinkSync(file); log(`Cline hook removed: ${e}`); } } catch (err) { log(`Cline hook removal failed: ${err && err.message}`); ok = false; }
   }
 
   // Only our own file: the same bytes we put there.

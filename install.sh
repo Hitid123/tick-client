@@ -54,6 +54,7 @@ done
 chmod +x "$TICK_HOME/statusline.sh" "$TICK_HOME/daemon.mjs"
 # Optional, so an installer fetched by an older bootstrap still works.
 [ -f "$SRC/opencode-plugin.js" ] && cp "$SRC/opencode-plugin.js" "$TICK_HOME/opencode-plugin.js"
+[ -f "$SRC/opencode-tui.js" ] && cp "$SRC/opencode-tui.js" "$TICK_HOME/opencode-tui.js"
 
 # The Claude desktop app runs hooks but never a status line, so on a Mac the
 # satellite draws the line there and the hook is its only signal.
@@ -241,6 +242,28 @@ if [ -d "$(dirname "$(dirname "$OPENCODE_PLUGIN")")" ] && [ -f "$TICK_HOME/openc
   OPENCODE_ADDED=1
 fi
 
+# OpenCode's own interface draws our line too (opencode-tui.js, OpenCode 1.x):
+# one entry, the path to our file, added to the "plugin" list in its tui.json
+# beside anyone else's, taken back alone on uninstall. The file stays in
+# ~/.tick, so updates reach it like every other file of ours.
+OPENCODE_TUI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/tui.json"
+OPENCODE_TUI_ADDED=0
+if [ "$OPENCODE_ADDED" -eq 1 ] && [ -f "$TICK_HOME/opencode-tui.js" ]; then
+  [ -f "$OPENCODE_TUI" ] && cp "$OPENCODE_TUI" "$TICK_HOME/opencode-tui.backup.$STAMP.json"
+  if node - "$OPENCODE_TUI" "$TICK_HOME/opencode-tui.js" <<'NODE'
+const fs = require('node:fs');
+const [file, ours] = process.argv.slice(2);
+let cur = { $schema: 'https://opencode.ai/tui.json' };
+if (fs.existsSync(file)) { try { cur = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { process.exit(1); } }
+if (!cur || typeof cur !== 'object' || Array.isArray(cur)) process.exit(1);
+const list = Array.isArray(cur.plugin) ? cur.plugin : [];
+if (!list.some((p) => p === ours)) cur.plugin = [...list, ours];
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify(cur, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  then OPENCODE_TUI_ADDED=1; else echo "TICK: left OpenCode's tui.json as it is (not JSON we can safely add to)"; fi
+fi
+
 # A second install must not forget the first. The manifest's backup is what
 # settings.json looked like before TICK ever touched it, and that is what
 # uninstall.sh has to put back; a fresh backup taken now would already contain
@@ -256,6 +279,7 @@ if [ -f "$MANIFEST" ] && PREV_BACKUP=$(jq -r '.backup // empty' "$MANIFEST" 2>/d
   [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && CODEX_ADDED=1
   [ "$(jq -r '.cursor_added // false' "$MANIFEST")" = true ] && CURSOR_ADDED=1
   [ "$(jq -r '.antigravity_added // false' "$MANIFEST")" = true ] && AG_ADDED=1
+  [ "$(jq -r '.opencode_tui_added // false' "$MANIFEST")" = true ] && OPENCODE_TUI_ADDED=1
   [ -n "$(jq -r '.heartbeat // empty' "$MANIFEST")" ] && [ "$HOOK_ADDED" -eq 0 ] && HEARTBEAT_ADDED=1
 fi
 
@@ -266,13 +290,15 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
       --arg cursor "$CURSOR_HOOKS" --arg cursor_cmd "$CURSOR_CMD" --argjson cursor_added "$CURSOR_ADDED" \
       --arg antigravity "$AG_HOOKS" --argjson antigravity_added "$AG_ADDED" \
+      --arg opencode_tui "$OPENCODE_TUI" --arg opencode_tui_entry "$TICK_HOME/opencode-tui.js" --argjson opencode_tui_added "$OPENCODE_TUI_ADDED" \
   '{backup: $backup, settings: $settings, wrote_hash: $hash, had_file: ($had_file == 1), had_field: ($had_field == 1),
     hook: (if $hook_added == 1 then $hook else null end),
     heartbeat: (if $heartbeat_added == 1 then $hook else null end),
     codex_config: $codex, codex_added: ($codex_added == 1),
     opencode_plugin: (if $opencode_added == 1 then $opencode else null end),
     cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1),
-    antigravity_hooks: $antigravity, antigravity_added: ($antigravity_added == 1)}' \
+    antigravity_hooks: $antigravity, antigravity_added: ($antigravity_added == 1),
+    opencode_tui: $opencode_tui, opencode_tui_entry: $opencode_tui_entry, opencode_tui_added: ($opencode_tui_added == 1)}' \
   > "$TICK_HOME/install.manifest.json"
 
 # --- desktop satellite (macOS) -----------------------------------------------

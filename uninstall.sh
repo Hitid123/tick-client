@@ -51,6 +51,24 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && [ "$(jq -r '.plugin_ad
   say 'removed the Claude Code plugin'
 fi
 
+# --- OpenCode's interface plugin -------------------------------------------------
+# Our one entry in tui.json's "plugin" list, nothing else in the file.
+if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  OC_TUI=$(jq -r '.opencode_tui // empty' "$MANIFEST")
+  OC_ENTRY=$(jq -r '.opencode_tui_entry // empty' "$MANIFEST")
+  if [ "$(jq -r '.opencode_tui_added // false' "$MANIFEST")" = true ] && [ -f "$OC_TUI" ] && [ -n "$OC_ENTRY" ]; then
+    node - "$OC_TUI" "$OC_ENTRY" <<'NODE' && say "removed our plugin from OpenCode's tui.json"
+const fs = require('node:fs');
+const [file, ours] = process.argv.slice(2);
+const cur = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (!Array.isArray(cur.plugin) || !cur.plugin.includes(ours)) process.exit(1);
+cur.plugin = cur.plugin.filter((p) => p !== ours);
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify(cur, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  fi
+fi
+
 # --- the Antigravity hook group ------------------------------------------------
 # Only the group named "tick", and only when every handler in it runs our hook.
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then

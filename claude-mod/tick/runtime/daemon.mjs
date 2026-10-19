@@ -213,7 +213,7 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), presen
  * so their unsold time is unknown and they are left out rather than counted
  * as fully sold.
  */
-export const FILL_SURFACES = ['term', 'vsc'];
+export const FILL_SURFACES = ['term', 'vsc', 'oc'];
 export function fillOf(items, unfilled, prev = {}) {
   const out = Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, { ...v }]));
   const at = (surface) => (out[surface] ??= { filled_ms: 0, unfilled_ms: 0 });
@@ -256,7 +256,7 @@ export function mergeItems(prev, items) {
  * id itself never leaves.
  */
 export function surfaceOf(sid) {
-  const m = /^(vsc|dsk|mod):/.exec(String(sid ?? ''));
+  const m = /^(vsc|dsk|mod|oc):/.exec(String(sid ?? ''));
   return m ? m[1] : 'term';
 }
 
@@ -1112,6 +1112,7 @@ export function installedFiles(home, os = platform(), running = process.argv[1])
     { name: 'daemon.mjs', dest: at('daemon.mjs'), always: true, check: 'node', mode: 0o755, from: existsSync(at('daemon.mjs')) ? at('daemon.mjs') : running },
     { name: 'hook.mjs', dest: at('hook.mjs'), check: 'node' },
     { name: 'opencode-plugin.js', dest: at('opencode-plugin.js'), check: 'node' },
+    { name: 'opencode-tui.js', dest: at('opencode-tui.js'), check: 'node' },
     { name: 'install-windows.mjs', dest: at('install-windows.mjs'), check: 'node' },
     { name: 'statusline.sh', dest: at('statusline.sh'), check: 'sh', mode: 0o755 },
     { name: 'nojq.sh', dest: at('nojq.sh'), check: 'sh', mode: 0o755 },

@@ -903,11 +903,12 @@ function removeAntigravityHooks(file) {
 // ------------------------------------------------------------------- Cline
 
 /**
- * Cline runs a hook as an executable file named after its event, from its
- * hooks folder (macOS and Linux only; the user turns hooks on in Cline's
- * settings). One file per event, so a file of ours is written only where no
- * file of that name exists, and it carries a marker line so taking it back
- * takes back only ours.
+ * Cline runs a hook as a file named after its event, from its global hooks
+ * folder, <Documents>/Cline/Hooks (read from Cline 4.1.25 on the owner's Mac,
+ * 19.10): an executable with no extension on macOS and Linux, `<Event>.ps1` on
+ * Windows. Hooks are on by default there. One file per event, so a file of
+ * ours is written only where no file of that name exists, and it carries a
+ * marker line so taking it back takes back only ours.
  *
  *   TaskStart, TaskResume, UserPromptSubmit   a task running
  *   PostToolUse                               still running (a heartbeat)
@@ -916,8 +917,14 @@ function removeAntigravityHooks(file) {
 const CLINE_EVENTS = ['TaskStart', 'TaskResume', 'UserPromptSubmit', 'PostToolUse', 'TaskComplete', 'TaskCancel'];
 const CLINE_MARKER = '# TICK activity hook';
 
-function clineHookScript(command, event) {
+function clineHookScript(command, event, windows = false) {
+  if (windows) return `${CLINE_MARKER}: writes "a task is running" for TICK and nothing else. Removed by "TICK: Turn off".\r\n$input | & ${command} ${event}\r\n`;
   return `#!/bin/sh\n${CLINE_MARKER}: writes "a task is running" for TICK and nothing else. Removed by "TICK: Turn off".\nexec ${command} ${event}\n`;
+}
+
+/** The file Cline looks for, on this system. */
+function clineHookName(event, windows = false) {
+  return windows ? `${event}.ps1` : event;
 }
 
 function isOurClineHook(text) {
@@ -979,6 +986,7 @@ module.exports = {
   CLINE_EVENTS,
   CLINE_MARKER,
   clineHookScript,
+  clineHookName,
   isOurClineHook,
   cursorHooksInstalled,
   addCursorHooks,
