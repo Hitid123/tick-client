@@ -33,5 +33,13 @@ for (const line of fs.readFileSync("SHA256SUMS", "utf8").split("\n")) {
 fs.writeFileSync("../server/lib/client-release.json", JSON.stringify({ files }, null, 2) + "\n");
 '
 
-printf 'wrote SHA256SUMS and server/lib/client-release.json:\n\n'
+# A copy on our own site, for installers that cannot reach GitHub or its
+# jsDelivr mirror (19.10: the Windows installer timed out on GitHub, and
+# jsDelivr refuses to serve .exe files). The checksums travel with them, and
+# every file is still checked against them before it is installed.
+rm -rf ../server/public/dl
+mkdir -p ../server/public/dl
+for f in $FILES SHA256SUMS bootstrap.sh; do cp "$f" "../server/public/dl/$f"; done
+
+printf 'wrote SHA256SUMS, server/lib/client-release.json and server/public/dl:\n\n'
 cat SHA256SUMS

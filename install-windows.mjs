@@ -59,6 +59,13 @@ const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'tick-satellite-w
 const CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const CODEX_CONFIG = join(CODEX_DIR, 'config.toml');
 const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
+// Newer Codex also reads hooks from hooks.json beside config.toml, and refuses
+// a layer that has both: "loading hooks from both …hooks.json and …config.toml;
+// prefer a single representation for this layer" (someone's Codex app on
+// Windows, 19.10), and then runs neither. Where hooks.json exists, ours goes
+// there, in the shape Codex itself writes when it brings Claude Code's hooks
+// over, and nothing of ours stays in config.toml.
+const CODEX_HOOKS_JSON = join(CODEX_DIR, 'hooks.json');
 const OPENCODE_PLUGIN = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'plugins', 'tick.js');
 // Cursor's own hook file. Cursor on Windows did not run Claude Code's hooks
 // (the owner's report of 08.10 had no Cursor turn at all), so ours goes here,
@@ -90,9 +97,34 @@ async function fetchBytes(name) {
   if (!/^https?:/.test(BASE)) {
     try { return readFileSync(join(BASE, name)); } catch { die(`could not read ${name}; nothing was installed`); }
   }
-  const res = await fetch(`${BASE}/${name}`, { signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) die(`could not download ${name} (HTTP ${res.status})`);
-  return Buffer.from(await res.arrayBuffer());
+  // GitHub can be slow or unreachable from where people are (a 30-second
+  // limit timed out for someone on 19.10). Two patient tries there, then the
+  // same files of the same commit through jsDelivr, GitHub's public mirror.
+  // Every file is still checked against SHA256SUMS before anything is written.
+  // Last, our own site's copy of the current release (release.sh), for when
+  // GitHub is out of reach and jsDelivr will not serve the .exe.
+  const sources = [BASE, mirrorOf(BASE), /^https:\/\/raw\.githubusercontent\.com\//.test(BASE) ? 'https://gettick.dev/dl' : null].filter(Boolean);
+  let last = '';
+  for (const base of sources) {
+    for (const ms of [60_000, 120_000]) {
+      try {
+        const res = await fetch(`${base}/${name}`, { signal: AbortSignal.timeout(ms) });
+        if (res.ok) return Buffer.from(await res.arrayBuffer());
+        last = `HTTP ${res.status}`;
+        if (res.status === 404) break;
+      } catch (e) {
+        last = e && e.name === 'TimeoutError' ? `no answer in ${ms / 1000} s` : String(e && e.message ? e.message : e);
+      }
+      say(`${name}: ${last}; trying again${base === BASE ? '' : base.includes('jsdelivr') ? ' through jsDelivr' : ' from gettick.dev'}…`);
+    }
+  }
+  die(`could not download ${name} (${last}). Nothing was installed. Check the connection and run the command again.`);
+}
+
+/** The same commit's files on jsDelivr, which mirrors GitHub. */
+function mirrorOf(base) {
+  const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+\/[^/]+)\/([^/]+)$/.exec(String(base));
+  return m ? `https://cdn.jsdelivr.net/gh/${m[1]}@${m[2]}` : null;
 }
 
 function stopSatellite() {
@@ -172,6 +204,35 @@ function stripCodexBlock(s) {
   const after = s.slice(endMark + END.length).replace(/^\n+/, '');
   const middle = theirs ? `${before.length > 0 ? '\n' : ''}${theirs}\n${after ? '\n' : ''}` : '';
   return `${before}${middle}${after}`;
+}
+
+/** Ours added to Codex's hooks.json, beside whatever is there; false if the file is not JSON we can add to. */
+function addCodexJson() {
+  const file = readJson(CODEX_HOOKS_JSON, null);
+  if (!file || typeof file !== 'object' || Array.isArray(file)) return false;
+  const hooks = file.hooks && typeof file.hooks === 'object' ? { ...file.hooks } : {};
+  for (const e of EVENTS) {
+    const list = Array.isArray(hooks[e]) ? hooks[e] : [];
+    if (!list.some((g) => g?.hooks?.some((h) => h?.command === CODEX_CMD))) {
+      hooks[e] = [...list, { matcher: '', hooks: [{ type: 'command', command: CODEX_CMD, timeout: codexTimeout(e) }] }];
+    }
+  }
+  copyFileSync(CODEX_HOOKS_JSON, join(HOME, 'codex-hooks.backup.json'));
+  writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`);
+  return true;
+}
+
+/** Ours out of Codex's hooks.json: each group whose handlers all run our hook; the rest stays. */
+function removeCodexJson() {
+  const file = readJson(CODEX_HOOKS_JSON, null);
+  if (!file?.hooks || typeof file.hooks !== 'object') return;
+  const hooks = {};
+  for (const [e, list] of Object.entries(file.hooks)) {
+    const kept = Array.isArray(list) ? list.filter((g) => !(g?.hooks?.length && g.hooks.every((h) => h?.command === CODEX_CMD))) : list;
+    if (!Array.isArray(kept) || kept.length) hooks[e] = kept;
+  }
+  writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`);
+  say('removed our Codex hook from hooks.json');
 }
 
 function removeCodexBlock() {
@@ -295,7 +356,12 @@ async function install() {
   // config.toml: one marked block, the same the Mac installer and the editor
   // extension write, nothing else in the file read or rewritten.
   let codexAdded = prev?.codex_added ?? false;
-  if (existsSync(CODEX_DIR) && !readText(CODEX_CONFIG).includes('# >>> TICK activity hook')) {
+  let codexJson = prev?.codex_json ?? false;
+  if (existsSync(CODEX_HOOKS_JSON)) {
+    if (readText(CODEX_CONFIG).includes('# >>> TICK activity hook')) { removeCodexBlock(); codexAdded = false; }
+    if (addCodexJson()) codexJson = true;
+    else say('left ~/.codex/hooks.json as it is (not JSON we can add to); the Codex app will not count until it is');
+  } else if (existsSync(CODEX_DIR) && !readText(CODEX_CONFIG).includes('# >>> TICK activity hook')) {
     const text = readText(CODEX_CONFIG);
     if (text) copyFileSync(CODEX_CONFIG, join(HOME, 'codex-config.backup.toml'));
     const base = text.length > 0 && !text.endsWith('\n') ? `${text}\n` : text;
@@ -345,6 +411,7 @@ async function install() {
     plugin_added: plugin,
     cursor_added: cursorAdded,
     codex_added: codexAdded,
+    codex_json: codexJson,
     opencode_plugin: opencode,
   }, null, 2)}\n`);
 
@@ -406,6 +473,7 @@ function uninstall() {
     say('removed the Claude Code plugin');
   }
   if (m?.codex_added) removeCodexBlock();
+  if (m?.codex_json) removeCodexJson();
   if (m?.cursor_added && existsSync(CURSOR_HOOKS)) {
     const file = readJson(CURSOR_HOOKS, null);
     if (file?.hooks && typeof file.hooks === 'object') {
@@ -452,6 +520,11 @@ function report() {
   const beat = readJson(join(HOME, 'state', 'mod-desktop.json'), null);
   say(`plugin drawing in the Claude app: ${beat ? `signalled ${ago(beat.ts)}` : 'never yet'}`);
   say(`Codex config: ${existsSync(CODEX_CONFIG) ? (readText(CODEX_CONFIG).includes('TICK activity hook') ? 'has our hook' : 'no hook of ours') : 'not found'}`);
+  if (existsSync(CODEX_HOOKS_JSON)) {
+    const hj = readJson(CODEX_HOOKS_JSON, null);
+    const has = Object.values(hj?.hooks ?? {}).flat().some((g) => g?.hooks?.some((h) => h?.command === CODEX_CMD));
+    say(`Codex hooks.json: ${has ? 'has our hook' : 'no hook of ours'}${readText(CODEX_CONFIG).includes('TICK activity hook') ? '; config.toml has one too, and Codex refuses both: run the install again' : ''}`);
+  }
   say(`OpenCode plugin: ${existsSync(OPENCODE_PLUGIN) ? 'yes' : 'no'}`);
   say(`Cursor hooks: ${readText(CURSOR_HOOKS).includes('hook.mjs') ? 'has our hook' : existsSync(CURSOR_DIR) ? 'no hook of ours' : 'Cursor not found'}`);
   say('recent turns (agent, event, when):');

@@ -2,7 +2,7 @@
   "name": "gettick",
   "displayName": "TICK for Claude Code & Codex",
   "description": "One sponsored line in your editor status bar, for Claude Code and Codex. 70% of gross goes to you, paid in crypto from $5.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "license": "MIT",
   "publisher": "tick",
   "repository": { "type": "git", "url": "https://github.com/Hitid123/tick-client" },
@@ -27,11 +27,6 @@
           "type": "boolean",
           "default": true,
           "description": "Show the TICK line in the status bar."
-        },
-        "claudeCode.spinnerVerbs": {
-          "type": "object",
-          "default": null,
-          "markdownDescription": "Words the Claude Code panel shows while the model works. Claude Code reads this setting but does not declare it, so no extension may write it until one does; TICK declares it here in order to put its line there. Owned by whoever set it: if the value is not TICK's own, TICK never touches it again."
         }
       }
     }

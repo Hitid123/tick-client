@@ -69,6 +69,27 @@ NODE
   fi
 fi
 
+# --- the Codex hooks.json entries ---------------------------------------------
+# Each group whose handlers all run our hook; everyone else's stays.
+if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  CX_JSON=$(jq -r '.codex_json // empty' "$MANIFEST")
+  CX_CMD=$(jq -r '.codex_cmd // empty' "$MANIFEST")
+  if [ "$(jq -r '.codex_json_added // false' "$MANIFEST")" = true ] && [ -f "$CX_JSON" ] && [ -n "$CX_CMD" ]; then
+    node - "$CX_JSON" "$CX_CMD" <<'NODE' && say 'removed our Codex hook from hooks.json'
+const fs = require('node:fs');
+const [file, command] = process.argv.slice(2);
+const cur = JSON.parse(fs.readFileSync(file, 'utf8'));
+const hooks = {};
+for (const [e, list] of Object.entries(cur.hooks || {})) {
+  const kept = Array.isArray(list) ? list.filter((g) => !(g && Array.isArray(g.hooks) && g.hooks.length && g.hooks.every((h) => h && h.command === command))) : list;
+  if (!Array.isArray(kept) || kept.length) hooks[e] = kept;
+}
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify({ ...cur, hooks }, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  fi
+fi
+
 # --- the Antigravity hook group ------------------------------------------------
 # Only the group named "tick", and only when every handler in it runs our hook.
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then

@@ -157,7 +157,66 @@ fi
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
 CODEX_ADDED=0
-if [ "$DESKTOP" -eq 1 ] && { [ -d "$CODEX_DIR" ] || [ -d /Applications/Codex.app ]; }; then
+# Newer Codex reads hooks.json too and refuses a layer that has both ("prefer a
+# single representation for this layer", 19.10), then runs neither. Where it
+# exists, ours goes there, in the shape Codex writes when it brings Claude
+# Code's hooks over, and our block leaves config.toml.
+CODEX_JSON="$CODEX_DIR/hooks.json"
+CODEX_JSON_ADDED=0
+if [ "$DESKTOP" -eq 1 ] && [ -f "$CODEX_JSON" ]; then
+  # Ours out of config.toml, nothing else: the same as uninstall.sh.
+  if [ -f "$CODEX_CONFIG" ] && grep -qF '# >>> TICK activity hook' "$CODEX_CONFIG"; then
+    cp "$CODEX_CONFIG" "$TICK_HOME/codex-config.backup.$STAMP.toml"
+    node - "$CODEX_CONFIG" <<'NODE' || true
+const fs = require('node:fs');
+const file = process.argv[2];
+const s = fs.readFileSync(file, 'utf8');
+const START = '# >>> TICK activity hook', END = '# <<< TICK activity hook';
+const start = s.indexOf(START);
+const endMark = start === -1 ? -1 : s.indexOf(END, start);
+if (endMark === -1) process.exit(1);
+const tables = [[]];
+for (const line of s.slice(start, endMark).split('\n')) {
+  if (/^\s*\[/.test(line)) tables.push([]);
+  tables[tables.length - 1].push(line);
+}
+const runsOurs = (t) => t.some((l) => /^\s*command\s*=.*hook\.mjs\\?"?\s+cx"\s*$/.test(l));
+const kept = [];
+for (let i = 1; i < tables.length; i++) {
+  const m = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(tables[i][0]);
+  if (!m) { kept.push(tables[i]); continue; }
+  let j = i + 1;
+  while (j < tables.length && tables[j][0].trim() === `[[hooks.${m[1]}.hooks]]`) j++;
+  const handlers = tables.slice(i + 1, j);
+  if (!(handlers.length > 0 && handlers.every(runsOurs))) kept.push(...tables.slice(i, j));
+  i = j - 1;
+}
+const theirs = kept.map((t) => t.join('\n')).join('\n').replace(/\s+$/, '');
+const before = s.slice(0, start).replace(/\n+$/, start > 0 ? '\n' : '');
+const after = s.slice(endMark + END.length).replace(/^\n+/, '');
+const middle = theirs ? `${before.length > 0 ? '\n' : ''}${theirs}\n${after ? '\n' : ''}` : '';
+const next = `${before}${middle}${after}`;
+if (next.trim() === '') fs.unlinkSync(file); else fs.writeFileSync(file, next);
+NODE
+  fi
+  cp "$CODEX_JSON" "$TICK_HOME/codex-hooks.backup.$STAMP.json"
+  if node - "$CODEX_JSON" "node \"$TICK_HOME/hook.mjs\" cx" <<'NODE'
+const fs = require('node:fs');
+const [file, command] = process.argv.slice(2);
+let cur; try { cur = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { process.exit(1); }
+if (!cur || typeof cur !== 'object' || Array.isArray(cur)) process.exit(1);
+const hooks = cur.hooks && typeof cur.hooks === 'object' ? { ...cur.hooks } : {};
+for (const e of ['UserPromptSubmit', 'Stop', 'SessionEnd']) {
+  const list = Array.isArray(hooks[e]) ? hooks[e] : [];
+  if (!list.some((g) => g && Array.isArray(g.hooks) && g.hooks.some((h) => h && h.command === command))) {
+    hooks[e] = [...list, { matcher: '', hooks: [{ type: 'command', command, timeout: e === 'SessionEnd' ? 3 : 10 }] }];
+  }
+}
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify({ ...cur, hooks }, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  then CODEX_JSON_ADDED=1; else echo "TICK: left ~/.codex/hooks.json as it is (not JSON we can add to)"; fi
+elif [ "$DESKTOP" -eq 1 ] && { [ -d "$CODEX_DIR" ] || [ -d /Applications/Codex.app ]; }; then
   if ! grep -qF '# >>> TICK activity hook' "$CODEX_CONFIG" 2>/dev/null; then
     mkdir -p "$CODEX_DIR"
     [ -f "$CODEX_CONFIG" ] && cp "$CODEX_CONFIG" "$TICK_HOME/codex-config.backup.$STAMP.toml"
@@ -276,7 +335,8 @@ if [ -f "$MANIFEST" ] && PREV_BACKUP=$(jq -r '.backup // empty' "$MANIFEST" 2>/d
   [ "$(jq -r '.had_field' "$MANIFEST")" = true ] && HAD_FIELD=1 || HAD_FIELD=0
   PREV_HOOK=$(jq -r '.hook // empty' "$MANIFEST")
   [ -n "$PREV_HOOK" ] && HOOK_ADDED=1
-  [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && CODEX_ADDED=1
+  [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && [ "$CODEX_JSON_ADDED" -eq 0 ] && CODEX_ADDED=1
+  [ "$(jq -r '.codex_json_added // false' "$MANIFEST")" = true ] && CODEX_JSON_ADDED=1
   [ "$(jq -r '.cursor_added // false' "$MANIFEST")" = true ] && CURSOR_ADDED=1
   [ "$(jq -r '.antigravity_added // false' "$MANIFEST")" = true ] && AG_ADDED=1
   [ "$(jq -r '.opencode_tui_added // false' "$MANIFEST")" = true ] && OPENCODE_TUI_ADDED=1
@@ -287,6 +347,7 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --argjson had_file "$HAD_FILE" --argjson had_field "$HAD_FIELD" \
       --arg settings "$SETTINGS" --arg hook "$HOOK_CMD" --argjson hook_added "$HOOK_ADDED" \
       --arg codex "$CODEX_CONFIG" --argjson codex_added "$CODEX_ADDED" --argjson heartbeat_added "$HEARTBEAT_ADDED" \
+      --arg codex_json "$CODEX_JSON" --arg codex_cmd "node \"$TICK_HOME/hook.mjs\" cx" --argjson codex_json_added "$CODEX_JSON_ADDED" \
       --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
       --arg cursor "$CURSOR_HOOKS" --arg cursor_cmd "$CURSOR_CMD" --argjson cursor_added "$CURSOR_ADDED" \
       --arg antigravity "$AG_HOOKS" --argjson antigravity_added "$AG_ADDED" \
@@ -295,6 +356,7 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
     hook: (if $hook_added == 1 then $hook else null end),
     heartbeat: (if $heartbeat_added == 1 then $hook else null end),
     codex_config: $codex, codex_added: ($codex_added == 1),
+    codex_json: $codex_json, codex_cmd: $codex_cmd, codex_json_added: ($codex_json_added == 1),
     opencode_plugin: (if $opencode_added == 1 then $opencode else null end),
     cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1),
     antigravity_hooks: $antigravity, antigravity_added: ($antigravity_added == 1),

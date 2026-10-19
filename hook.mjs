@@ -88,6 +88,12 @@ function agentOf(arg, env, payload, raw) {
   if (arg === 'ag' || arg === 'cl') return arg;
   if (payload.cursor_version || raw === 'beforeSubmitPrompt' || raw === 'stop' || raw === 'sessionEnd') return 'cu';
   if (env.DEVIN_PROJECT_DIR) return 'dv';
+  // Codex brings Claude Code's hooks over into its own hooks.json when it
+  // imports settings, ours included, still saying `cc`. Run by the Codex app,
+  // it is the Codex app's turn (19.10).
+  if (arg === 'cc' && (env.__CFBundleIdentifier === 'com.openai.codex'
+    || /^Codex\b/.test(String(env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? ''))
+    || /^OpenAI\.Codex/.test(String(env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY ?? '')))) arg = 'cx';
   if (arg === 'cx') {
     // macOS: the bundle id, when there is one, settles it. Windows has none;
     // the Codex app starts its engine with CODEX_INTERNAL_ORIGINATOR_OVERRIDE

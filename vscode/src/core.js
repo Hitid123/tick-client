@@ -854,6 +854,47 @@ function cursorHooksInstalled(file, command, events = CURSOR_EVENTS) {
   return events.every((e) => Array.isArray(hooks[e]) && hooks[e].some((h) => h && h.command === command));
 }
 
+// ------------------------------------------------- Codex's hooks.json
+
+/**
+ * Newer Codex also reads ~/.codex/hooks.json and refuses a layer that has hooks
+ * in both it and config.toml ("prefer a single representation for this
+ * layer", 19.10), then runs neither. Where hooks.json exists ours goes there,
+ * in the shape Codex writes when it brings Claude Code's hooks over:
+ * { hooks: { <Event>: [{ matcher, hooks: [{ type, command, timeout }] }] } }.
+ */
+const CODEX_JSON_EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd'];
+
+function codexJsonInstalled(file, command) {
+  const hooks = file && typeof file === 'object' ? file.hooks : null;
+  if (!hooks || typeof hooks !== 'object') return false;
+  return CODEX_JSON_EVENTS.every((e) => Array.isArray(hooks[e]) && hooks[e].some((g) => g && Array.isArray(g.hooks) && g.hooks.some((h) => h && h.command === command)));
+}
+
+function addCodexJson(file, command) {
+  const base = file && typeof file === 'object' && !Array.isArray(file) ? file : {};
+  const hooks = { ...(base.hooks && typeof base.hooks === 'object' ? base.hooks : {}) };
+  for (const e of CODEX_JSON_EVENTS) {
+    const list = Array.isArray(hooks[e]) ? hooks[e] : [];
+    if (!list.some((g) => g && Array.isArray(g.hooks) && g.hooks.some((h) => h && h.command === command))) {
+      hooks[e] = [...list, { matcher: '', hooks: [{ type: 'command', command, timeout: codexTimeout(e) }] }];
+    }
+  }
+  return { ...base, hooks };
+}
+
+function removeCodexJson(file, command) {
+  if (!file || typeof file !== 'object' || !file.hooks || typeof file.hooks !== 'object') return { file, changed: false };
+  const hooks = {};
+  let changed = false;
+  for (const [e, list] of Object.entries(file.hooks)) {
+    const kept = Array.isArray(list) ? list.filter((g) => !(g && Array.isArray(g.hooks) && g.hooks.length && g.hooks.every((h) => h && h.command === command))) : list;
+    if (Array.isArray(list) && kept.length !== list.length) changed = true;
+    if (!Array.isArray(kept) || kept.length) hooks[e] = kept;
+  }
+  return { file: { ...file, hooks }, changed };
+}
+
 // ------------------------------------------------------------- Antigravity
 
 /**
@@ -979,6 +1020,9 @@ module.exports = {
   hostOf,
   countsInEditor,
   CURSOR_EVENTS,
+  codexJsonInstalled,
+  addCodexJson,
+  removeCodexJson,
   ANTIGRAVITY_EVENTS,
   antigravityHooksInstalled,
   addAntigravityHooks,

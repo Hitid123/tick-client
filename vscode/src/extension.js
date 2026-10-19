@@ -46,6 +46,7 @@ const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 // editor draws, and Codex only has to say when its model is working.
 const CODEX_DIR = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const CODEX_CONFIG = path.join(CODEX_DIR, 'config.toml');
+const CODEX_JSON = path.join(CODEX_DIR, 'hooks.json');
 
 // The editors that are VS Code underneath, each with its own agent and its own
 // hook file. Paths read from the installed builds and their docs on 08.10.
@@ -366,6 +367,27 @@ function installHooks(log) {
  */
 function installCodexHooks(log) {
   const command = hookCommand('cx');
+  // Codex reads hooks.json: ours goes there, and our block leaves config.toml (core.js).
+  if (fs.existsSync(CODEX_JSON)) {
+    try {
+      const json = readJson(CODEX_JSON, null);
+      if (json === null) throw new Error('~/.codex/hooks.json is not valid JSON; fix it first');
+      const toml = readText(CODEX_CONFIG);
+      if (toml.includes('# >>> TICK activity hook')) {
+        fs.copyFileSync(CODEX_CONFIG, path.join(HOME, `codex-config.backup.${stamp()}.toml`));
+        writeTextAtomic(CODEX_CONFIG, core.removeCodexHooks(toml).text);
+      }
+      if (core.codexJsonInstalled(json, command)) return { ok: true, already: true };
+      fs.copyFileSync(CODEX_JSON, path.join(HOME, `codex-hooks.backup.${stamp()}.json`));
+      writeJsonAtomic(CODEX_JSON, core.addCodexJson(json, command), true);
+      writeJsonAtomic(P.installed, { ...(readJson(P.installed, {}) || {}), codexJson: command, at: Date.now() });
+      log('Codex activity hook registered in hooks.json, pending its own review');
+      return { ok: true, already: false };
+    } catch (e) {
+      log(`Codex hook registration failed: ${e && e.message}`);
+      return { ok: false, error: e && e.message };
+    }
+  }
   const existing = readText(CODEX_CONFIG);
   if (core.codexHooksInstalled(existing, command)) return { ok: true, already: true };
 
@@ -553,6 +575,14 @@ function uninstallHooks(log) {
     }
   }
 
+  const codexJson = readJson(CODEX_JSON, null);
+  if (codexJson && typeof codexJson === 'object') {
+    try {
+      const { file, changed } = core.removeCodexJson(codexJson, recorded.codexJson || hookCommand('cx'));
+      if (changed) { writeJsonAtomic(CODEX_JSON, file, true); log('Codex activity hook removed from hooks.json'); }
+    } catch (e) { log(`Codex hooks.json removal failed: ${e && e.message}`); ok = false; }
+  }
+
   const cursor = readJson(CURSOR_HOOKS, null);
   if (cursor && typeof cursor === 'object') {
     try {
@@ -608,7 +638,9 @@ function refreshSetupState() {
 function registered() {
   return {
     cc: core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
-    cx: core.codexHooksInstalled(readText(CODEX_CONFIG), hookCommand('cx')),
+    cx: fs.existsSync(CODEX_JSON)
+      ? core.codexJsonInstalled(readJson(CODEX_JSON, null), hookCommand('cx')) && !readText(CODEX_CONFIG).includes('# >>> TICK activity hook')
+      : core.codexHooksInstalled(readText(CODEX_CONFIG), hookCommand('cx')),
     cu: core.cursorHooksInstalled(readJson(CURSOR_HOOKS, null), hookCommand('cu')),
     dv: core.hooksInstalled(readJson(DEVIN_CONFIG, {}) || {}, hookCommand('cc'))
       || core.hooksInstalled(readJson(SETTINGS, {}) || {}, hookCommand('cc')),
