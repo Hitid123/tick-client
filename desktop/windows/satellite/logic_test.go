@@ -182,7 +182,7 @@ func TestOnlyAFullyVisibleStripCounts(t *testing.T) {
 }
 
 func TestHostsAreKnownByTheirFileName(t *testing.T) {
-	for exe, tag := range map[string]string{"claude.exe": "cd", "codex.exe": "xd", "chatgpt.exe": "xd", "cursor.exe": "cu", "windsurf.exe": "dv"} {
+	for exe, tag := range map[string]string{"claude.exe": "cd", "codex.exe": "xd", "chatgpt.exe": "xd", "cursor.exe": "cu", "windsurf.exe": "dv", "antigravity.exe": "ag"} {
 		if h := hostByExe(exe); h == nil || h.Tag != tag {
 			t.Fatalf("%s should be %s, got %+v", exe, tag, h)
 		}

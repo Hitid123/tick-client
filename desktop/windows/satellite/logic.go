@@ -66,6 +66,10 @@ var hosts = []Host{
 	{Tag: "xd", Name: "Codex", Also: []string{"cx"}, Exes: []string{"codex.exe", "chatgpt.exe"}, DY: 18.5, Placement: "desktop-placement-codex.json", ConfigKey: "codex"},
 	{Tag: "cu", Name: "Cursor", Exes: []string{"cursor.exe"}, DY: 15.5, Placement: "desktop-placement-cursor.json", ConfigKey: "cursor"},
 	{Tag: "dv", Name: "Devin", Exes: []string{"devin.exe", "windsurf.exe"}, DY: 18.5, Placement: "desktop-placement-devin.json", ConfigKey: "devin"},
+	// Google's agent app, an Electron build like the others. Its row was
+	// measured on the Mac (28, 19.10); the same app draws the same row here, and
+	// the person can drag the strip if it sits off.
+	{Tag: "ag", Name: "Antigravity", Exes: []string{"antigravity.exe"}, DY: 28, Placement: "desktop-placement-antigravity.json", ConfigKey: "antigravity"},
 }
 
 // The host whose process this is, or nil.

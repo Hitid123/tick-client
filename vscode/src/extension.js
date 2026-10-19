@@ -35,6 +35,7 @@ const P = {
   installed: path.join(STATE, 'panel-hooks.json'),
   shipped: path.join(STATE, 'panel-files.json'),
   spinner: path.join(STATE, 'panel-spinner.json'),
+  supply: path.join(STATE, 'supply.json'),
 };
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -1052,6 +1053,7 @@ function showStatus(channel) {
     view,
     current,
     now,
+    supply: readJson(P.supply, null),
     pendingSetup,
     daemonAlive: daemonAlive(),
     working: countingWorking,

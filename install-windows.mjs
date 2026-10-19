@@ -22,7 +22,10 @@
 //   - where Claude Code is installed, the TICK plugin, with Claude Code's own
 //     `claude plugin install`;
 //   - where Codex is installed, one marked block in .codex\config.toml;
-//   - where OpenCode is installed, one plugin file in its plugins folder;
+//   - where OpenCode is installed, one plugin file in its plugins folder and
+//     one entry in the "plugin" list of its tui.json;
+//   - where Antigravity is installed, one hook group named "tick" in
+//     .gemini\config\hooks.json;
 //   - one value under HKCU\...\CurrentVersion\Run, so the satellite starts at
 //     login.
 // --uninstall takes all of it back.
@@ -31,6 +34,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSyn
 import { createHash } from 'node:crypto';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 
 const REPO = process.env.TICK_REPO ?? 'Hitid123/tick-client';
@@ -55,7 +59,7 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const SETTINGS = join(CLAUDE_DIR, 'settings.json');
 const MANIFEST = join(HOME, 'install.manifest.json');
 const EXE = join(HOME, 'tick-satellite.exe');
-const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'tick-satellite-windows.exe', 'install-windows.mjs'];
+const FILES = ['daemon.mjs', 'hook.mjs', 'opencode-plugin.js', 'opencode-tui.js', 'tick-satellite-windows.exe', 'install-windows.mjs'];
 const CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const CODEX_CONFIG = join(CODEX_DIR, 'config.toml');
 const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
@@ -67,6 +71,21 @@ const CODEX_CMD = `node "${join(HOME, 'hook.mjs')}" cx`;
 // over, and nothing of ours stays in config.toml.
 const CODEX_HOOKS_JSON = join(CODEX_DIR, 'hooks.json');
 const OPENCODE_PLUGIN = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'plugins', 'tick.js');
+// OpenCode's own interface draws our line too (opencode-tui.js, OpenCode 1.x):
+// one entry in the "plugin" list of its tui.json, as a file:// address, since
+// a bare C:\ path reads like a package name; OpenCode loads that form (checked
+// on 1.18.35). The file stays in .tick, so updates reach it.
+const OPENCODE_TUI = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'tui.json');
+const OPENCODE_TUI_ENTRY = pathToFileURL(join(HOME, 'opencode-tui.js')).href;
+// Google's Antigravity runs hooks from .gemini\config\hooks.json: named groups
+// of { "<Event>": [handlers] }, the same on Windows as on the Mac, where they
+// were watched firing (19.10). Ours is the group "tick", beside anyone else's.
+// Its payload names no event, so the event rides on the command line.
+const AG_DIR = join(homedir(), '.gemini', 'config');
+const AG_HOOKS = join(AG_DIR, 'hooks.json');
+const AG_CMD = `node "${join(HOME, 'hook.mjs')}" ag`;
+const AG_EVENTS = ['PreInvocation', 'PostInvocation', 'Stop'];
+const agOurs = (g) => g && typeof g === 'object' && Object.values(g).filter(Array.isArray).flat().every((h) => h && /hook\.mjs"? ag /.test(String(h.command)));
 // Cursor's own hook file. Cursor on Windows did not run Claude Code's hooks
 // (the owner's report of 08.10 had no Cursor turn at all), so ours goes here,
 // in Cursor's format, beside anyone else's.
@@ -235,6 +254,47 @@ function removeCodexJson() {
   say('removed our Codex hook from hooks.json');
 }
 
+/** Our group in Antigravity's hooks.json; false if the file is not JSON we can add to, or "tick" is someone else's. */
+function addAntigravity() {
+  const had = existsSync(AG_HOOKS);
+  const file = had ? readJson(AG_HOOKS, null) : {};
+  if (!file || typeof file !== 'object' || Array.isArray(file)) return false;
+  if (file.tick && !agOurs(file.tick)) return false;
+  if (had) copyFileSync(AG_HOOKS, join(HOME, 'antigravity-hooks.backup.json'));
+  file.tick = Object.fromEntries(AG_EVENTS.map((e) => [e, [{ type: 'command', command: `${AG_CMD} ${e}`, timeout: 5 }]]));
+  mkdirSync(AG_DIR, { recursive: true });
+  writeFileSync(AG_HOOKS, `${JSON.stringify(file, null, 2)}\n`);
+  return true;
+}
+
+function removeAntigravity() {
+  const file = readJson(AG_HOOKS, null);
+  if (!file?.tick || !agOurs(file.tick)) return;
+  delete file.tick;
+  writeFileSync(AG_HOOKS, `${JSON.stringify(file, null, 2)}\n`);
+  say('removed our Antigravity hook from hooks.json');
+}
+
+/** Our entry in OpenCode's tui.json "plugin" list; false if the file is not JSON we can add to. */
+function addOpencodeTui() {
+  const had = existsSync(OPENCODE_TUI);
+  const file = had ? readJson(OPENCODE_TUI, null) : { $schema: 'https://opencode.ai/tui.json' };
+  if (!file || typeof file !== 'object' || Array.isArray(file)) return false;
+  const list = Array.isArray(file.plugin) ? file.plugin : [];
+  if (list.includes(OPENCODE_TUI_ENTRY)) return true;
+  if (had) copyFileSync(OPENCODE_TUI, join(HOME, 'opencode-tui.backup.json'));
+  writeFileSync(OPENCODE_TUI, `${JSON.stringify({ ...file, plugin: [...list, OPENCODE_TUI_ENTRY] }, null, 2)}\n`);
+  return true;
+}
+
+function removeOpencodeTui() {
+  const file = readJson(OPENCODE_TUI, null);
+  if (!Array.isArray(file?.plugin) || !file.plugin.includes(OPENCODE_TUI_ENTRY)) return;
+  file.plugin = file.plugin.filter((p) => p !== OPENCODE_TUI_ENTRY);
+  writeFileSync(OPENCODE_TUI, `${JSON.stringify(file, null, 2)}\n`);
+  say("removed our plugin from OpenCode's tui.json");
+}
+
 function removeCodexBlock() {
   const next = stripCodexBlock(readText(CODEX_CONFIG));
   if (next === null) return;
@@ -302,6 +362,7 @@ async function install() {
   writeFileSync(join(HOME, 'daemon.mjs'), bodies.get('daemon.mjs'));
   writeFileSync(join(HOME, 'hook.mjs'), bodies.get('hook.mjs'));
   writeFileSync(join(HOME, 'opencode-plugin.js'), bodies.get('opencode-plugin.js'));
+  writeFileSync(join(HOME, 'opencode-tui.js'), bodies.get('opencode-tui.js'));
   writeFileSync(EXE, bodies.get('tick-satellite-windows.exe'));
   writeFileSync(join(HOME, 'install-windows.mjs'), bodies.get('install-windows.mjs'));
   // Started at login there is no PATH guarantee; the satellite reads this to
@@ -400,6 +461,19 @@ async function install() {
     writeFileSync(OPENCODE_PLUGIN, bodies.get('opencode-plugin.js'));
     opencode = OPENCODE_PLUGIN;
   }
+  let opencodeTui = prev?.opencode_tui ?? false;
+  if (opencode) {
+    if (addOpencodeTui()) opencodeTui = true;
+    else say("left OpenCode's tui.json as it is (not JSON we can add to); OpenCode counts, but draws no line");
+  }
+
+  // Antigravity: where it is installed, or has made its config folder.
+  let antigravity = prev?.antigravity ?? false;
+  const agApp = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Programs', 'Antigravity');
+  if (existsSync(agApp) || existsSync(AG_DIR)) {
+    if (addAntigravity()) antigravity = true;
+    else say('left .gemini\\config\\hooks.json as it is (not JSON we can add to); Antigravity will not count until it is');
+  }
   writeFileSync(MANIFEST, `${JSON.stringify({
     settings: SETTINGS,
     backup,
@@ -413,6 +487,8 @@ async function install() {
     codex_added: codexAdded,
     codex_json: codexJson,
     opencode_plugin: opencode,
+    opencode_tui: opencodeTui,
+    antigravity,
   }, null, 2)}\n`);
 
   if (SYSTEM) {
@@ -425,9 +501,9 @@ async function install() {
 
   say('installed.');
   process.stdout.write(`
-  The Claude app, the Codex app and Cursor now show one short sponsored line by the
-  message box while their AI works, marked "Ad"; Claude Code in a terminal shows it
-  above the prompt. A click opens the advertiser.
+  The Claude app, the Codex app, Cursor and Antigravity now show one short sponsored
+  line by the message box while their AI works, marked "Ad"; Claude Code and OpenCode
+  in a terminal show it at the bottom. A click opens the advertiser.
 ${codexAdded && !prev?.codex_added ? `
   Codex asks to review a new hook once before it runs it: allow ours when it does.
 ` : ''}
@@ -487,6 +563,8 @@ function uninstall() {
       say('removed our hook from Cursor');
     }
   }
+  if (m?.opencode_tui) removeOpencodeTui();
+  if (m?.antigravity) removeAntigravity();
   if (m?.opencode_plugin && existsSync(m.opencode_plugin)) {
     rmSync(m.opencode_plugin, { force: true });
     say('removed our OpenCode plugin');
@@ -525,7 +603,8 @@ function report() {
     const has = Object.values(hj?.hooks ?? {}).flat().some((g) => g?.hooks?.some((h) => h?.command === CODEX_CMD));
     say(`Codex hooks.json: ${has ? 'has our hook' : 'no hook of ours'}${readText(CODEX_CONFIG).includes('TICK activity hook') ? '; config.toml has one too, and Codex refuses both: run the install again' : ''}`);
   }
-  say(`OpenCode plugin: ${existsSync(OPENCODE_PLUGIN) ? 'yes' : 'no'}`);
+  say(`OpenCode plugin: ${existsSync(OPENCODE_PLUGIN) ? 'yes' : 'no'}, its line: ${readJson(OPENCODE_TUI, null)?.plugin?.includes?.(OPENCODE_TUI_ENTRY) ? 'yes' : 'no'}`);
+  say(`Antigravity hooks: ${agOurs(readJson(AG_HOOKS, null)?.tick) ? 'has our hook' : existsSync(AG_DIR) ? 'no hook of ours' : 'Antigravity not found'}`);
   say(`Cursor hooks: ${readText(CURSOR_HOOKS).includes('hook.mjs') ? 'has our hook' : existsSync(CURSOR_DIR) ? 'no hook of ours' : 'Cursor not found'}`);
   say('recent turns (agent, event, when):');
   const dir = join(HOME, 'state', 'activity');

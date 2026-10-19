@@ -34,6 +34,7 @@ const P = {
   profile: join(STATE, 'profile.json'),
   activity: join(STATE, 'activity'),
   updated: join(STATE, 'updated.json'),
+  supply: join(STATE, 'supply.json'),
 };
 
 const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
@@ -226,6 +227,20 @@ export function fillOf(items, unfilled, prev = {}) {
     if (FILL_SURFACES.includes(surface)) at(surface).unfilled_ms += ms;
   }
   return out;
+}
+
+/**
+ * What the server said when it had nothing paid to hand out (19.10): every
+ * campaign already seen its daily number of times on this computer, or none
+ * running. Kept in state/supply.json for the editor's status to say in words;
+ * anything else, or a fetch that brought something new, and there is no note.
+ */
+export function supplyNote(today, gained, now) {
+  if (gained > 0 || !today || typeof today !== 'object') return null;
+  if (today.state !== 'done_for_today' && today.state !== 'none_live') return null;
+  const resets = Date.parse(today.resets_at);
+  if (!Number.isFinite(resets) || resets <= now) return null;
+  return { state: today.state, resets_at: new Date(resets).toISOString(), ts: now };
 }
 
 /** Wrap items into the wire payload. Raw session_id never leaves the machine. */
@@ -906,6 +921,10 @@ async function cycle(cfg, device, cycleNo) {
           });
           gained += 1;
         }
+      }
+      if (res.ok) {
+        const today = supplyNote(res.json?.today, gained, Date.now());
+        if (today) writeJson(P.supply, today); else { try { unlinkSync(P.supply); } catch { /* none */ } }
       }
       fetchState = backoffAfter(gained, fetchState, cfg, Date.now());
     }

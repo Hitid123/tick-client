@@ -525,6 +525,7 @@ function looksLikeOurSpinner(v) {
 function diagnose({
   view, pendingSetup = [], daemonAlive = false, working = false,
   windowLive = false, claimedElsewhere = false, apiBase = '', now = Date.now(), current = null,
+  supply = null, timeZone = undefined,
 }) {
   const lines = [];
 
@@ -553,7 +554,14 @@ function diagnose({
       lines.push('It restarts itself from the status line or from this extension within half a minute.');
     } else {
       lines.push(`The background process is running and talking to ${apiBase || 'the server'}.`);
-      lines.push('An empty slot usually means nothing is sold for you right now.');
+      const until = supplyUntil(supply, now, timeZone);
+      if (until && supply.state === 'done_for_today') {
+        lines.push(`You have seen every ad there is for today: each one is shown a few times a day per computer. New ones come at ${until}.`);
+      } else if (until && supply.state === 'none_live') {
+        lines.push('No campaign is running for you right now. The line comes back by itself when one starts.');
+      } else {
+        lines.push('An empty slot usually means nothing is sold for you right now.');
+      }
     }
     return lines;
   }
@@ -569,6 +577,24 @@ function diagnose({
   }
 
   return lines;
+}
+
+/**
+ * When the day's ads come back, in the person's own clock and time zone, from
+ * the daemon's state/supply.json (the server's word, 19.10). Null when there is
+ * no note, or the time it named has passed.
+ */
+function supplyUntil(supply, now = Date.now(), timeZone = undefined) {
+  if (!supply || typeof supply !== 'object') return null;
+  const at = Date.parse(supply.resets_at);
+  if (!Number.isFinite(at) || at <= now) return null;
+  try {
+    const zone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const time = new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: zone });
+    return zone ? `${time} (${zone})` : time;
+  } catch {
+    return new Date(at).toISOString().slice(11, 16) + ' UTC';
+  }
 }
 
 // ------------------------------------------------------------------- claims
@@ -1059,6 +1085,7 @@ module.exports = {
   spinnerIsOurs,
   looksLikeOurSpinner,
   diagnose,
+  supplyUntil,
   claimIsOurs,
   claimedByTerminal,
   addHooks,
