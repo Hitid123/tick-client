@@ -51,6 +51,25 @@ if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && [ "$(jq -r '.plugin_ad
   say 'removed the Claude Code plugin'
 fi
 
+# --- the Antigravity hook group ------------------------------------------------
+# Only the group named "tick", and only when every handler in it runs our hook.
+if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  AG_HOOKS=$(jq -r '.antigravity_hooks // empty' "$MANIFEST")
+  if [ "$(jq -r '.antigravity_added // false' "$MANIFEST")" = true ] && [ -f "$AG_HOOKS" ]; then
+    node - "$AG_HOOKS" <<'NODE' && say 'removed our Antigravity hook from hooks.json'
+const fs = require('node:fs');
+const file = process.argv[2];
+const cur = JSON.parse(fs.readFileSync(file, 'utf8'));
+const g = cur && cur.tick;
+const ours = g && typeof g === 'object' && Object.values(g).filter(Array.isArray).flat().every((h) => h && /hook\.mjs"? ag /.test(String(h.command)));
+if (!ours) process.exit(1);
+delete cur.tick;
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify(cur, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  fi
+fi
+
 # --- the Codex hook and the OpenCode plugin -----------------------------------
 # Only what the installer recorded adding, and only our own bytes.
 if [ -f "$MANIFEST" ] && command -v jq >/dev/null 2>&1; then

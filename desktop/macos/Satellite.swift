@@ -67,6 +67,15 @@ let HOSTS = [
        placement: "state/desktop-placement-cursor.json"),
   Host(bundle: "com.exafunction.windsurf", tag: "dv", name: "Devin", dy: 18.5,
        placement: "state/desktop-placement-devin.json"),
+  // Antigravity 2.x is Google's agent app, not an editor build: no extension of
+  // ours runs in it, its agent's hooks report (`ag`, seen firing on the owner's
+  // Mac, 19.10), so the strip draws over it like over Codex. Its composer runs
+  // almost to the window's bottom, with no empty row under it, so the strip
+  // sits in the composer's own bottom row, between the model picker and the
+  // permission menu: 28, that row's midline, measured on the owner's
+  // screenshot of 2.24 on 19.10 (18.5 stuck out under the composer's edge).
+  Host(bundle: "com.google.antigravity", tag: "ag", name: "Antigravity", dy: 28,
+       placement: "state/desktop-placement-antigravity.json"),
 ]
 let CLAUDE = HOSTS[0]
 let ENV = ProcessInfo.processInfo.environment
@@ -687,7 +696,7 @@ let timer = Timer(timeInterval: 0.06, repeats: true) { _ in
   // app would be showing to nobody we can count, and in the way of everything.
   guard let host = frontHost() else {
     let busy = HOSTS.contains { !desktopSessions($0).isEmpty }
-    note(busy ? "hidden: none of Claude, Codex, Cursor, Devin is the app in front" : "waiting: no session in Claude, Codex, Cursor or Devin is working")
+    note(busy ? "hidden: none of Claude, Codex, Cursor, Devin, Antigravity is the app in front" : "waiting: no session in Claude, Codex, Cursor, Devin or Antigravity is working")
     offscreen(); return
   }
   let cfg = settings(host)

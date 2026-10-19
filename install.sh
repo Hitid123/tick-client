@@ -181,6 +181,33 @@ NODE
   fi
 fi
 
+# --- Antigravity (macOS) -------------------------------------------------------
+# Google's agent app runs hooks from ~/.gemini/config/hooks.json, named groups
+# of { "<Event>": [handlers] } (read from Antigravity 2.24's own engine and
+# watched firing on the owner's Mac, 19.10). Ours is the group named "tick":
+# added beside anyone else's, taken back alone on uninstall. Its payload names
+# no event, so the event rides on the command line.
+AG_HOOKS="$HOME/.gemini/config/hooks.json"
+AG_CMD="node \"$TICK_HOME/hook.mjs\" ag"
+AG_ADDED=0
+if [ "$DESKTOP" -eq 1 ] && { [ -d /Applications/Antigravity.app ] || [ -d "$HOME/.gemini/config" ]; }; then
+  mkdir -p "$HOME/.gemini/config"
+  [ -f "$AG_HOOKS" ] && cp "$AG_HOOKS" "$TICK_HOME/antigravity-hooks.backup.$STAMP.json"
+  if node - "$AG_HOOKS" "$AG_CMD" <<'NODE'
+const fs = require('node:fs');
+const [file, command] = process.argv.slice(2);
+let cur = {};
+try { cur = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (fs.existsSync(file)) process.exit(1); }
+if (!cur || typeof cur !== 'object' || Array.isArray(cur)) process.exit(1);
+const ours = (g) => g && typeof g === 'object' && Object.values(g).filter(Array.isArray).flat().every((h) => h && /hook\.mjs"? ag /.test(String(h.command)));
+if (cur.tick && !ours(cur.tick)) process.exit(1);
+cur.tick = Object.fromEntries(['PreInvocation', 'PostInvocation', 'Stop'].map((e) => [e, [{ type: 'command', command: `${command} ${e}`, timeout: 5 }]]));
+fs.writeFileSync(`${file}.tick.tmp`, JSON.stringify(cur, null, 2) + '\n');
+fs.renameSync(`${file}.tick.tmp`, file);
+NODE
+  then AG_ADDED=1; else echo "TICK: left ~/.gemini/config/hooks.json as it is (not JSON we can safely add to)"; fi
+fi
+
 # --- Cursor's own agent -------------------------------------------------------
 # Cursor runs hooks from ~/.cursor/hooks.json, its own format. On a Mac it also
 # picks up Claude Code's, but on Windows it did not (the owner's report of
@@ -228,6 +255,7 @@ if [ -f "$MANIFEST" ] && PREV_BACKUP=$(jq -r '.backup // empty' "$MANIFEST" 2>/d
   [ -n "$PREV_HOOK" ] && HOOK_ADDED=1
   [ "$(jq -r '.codex_added // false' "$MANIFEST")" = true ] && CODEX_ADDED=1
   [ "$(jq -r '.cursor_added // false' "$MANIFEST")" = true ] && CURSOR_ADDED=1
+  [ "$(jq -r '.antigravity_added // false' "$MANIFEST")" = true ] && AG_ADDED=1
   [ -n "$(jq -r '.heartbeat // empty' "$MANIFEST")" ] && [ "$HOOK_ADDED" -eq 0 ] && HEARTBEAT_ADDED=1
 fi
 
@@ -237,12 +265,14 @@ jq -n --arg backup "$BACKUP" --arg hash "$(sha256 "$SETTINGS")" \
       --arg codex "$CODEX_CONFIG" --argjson codex_added "$CODEX_ADDED" --argjson heartbeat_added "$HEARTBEAT_ADDED" \
       --arg opencode "$OPENCODE_PLUGIN" --argjson opencode_added "$OPENCODE_ADDED" \
       --arg cursor "$CURSOR_HOOKS" --arg cursor_cmd "$CURSOR_CMD" --argjson cursor_added "$CURSOR_ADDED" \
+      --arg antigravity "$AG_HOOKS" --argjson antigravity_added "$AG_ADDED" \
   '{backup: $backup, settings: $settings, wrote_hash: $hash, had_file: ($had_file == 1), had_field: ($had_field == 1),
     hook: (if $hook_added == 1 then $hook else null end),
     heartbeat: (if $heartbeat_added == 1 then $hook else null end),
     codex_config: $codex, codex_added: ($codex_added == 1),
     opencode_plugin: (if $opencode_added == 1 then $opencode else null end),
-    cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1)}' \
+    cursor_hooks: $cursor, cursor_cmd: $cursor_cmd, cursor_added: ($cursor_added == 1),
+    antigravity_hooks: $antigravity, antigravity_added: ($antigravity_added == 1)}' \
   > "$TICK_HOME/install.manifest.json"
 
 # --- desktop satellite (macOS) -----------------------------------------------
