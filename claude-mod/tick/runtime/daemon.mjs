@@ -313,6 +313,46 @@ export function fetchPlan(queue, cfg, state, now, currentExpiresAt = 0) {
   return { fetch: true, n: Math.max(1, Math.min(cfg.queue_fetch, missing)) };
 }
 
+/**
+ * Is anyone actually waiting on an AI right now? (2026-10-19.) A creative
+ * handed out counts against how often this computer may be given it that day,
+ * whether or not anyone sees it, and the daemon stays alive whenever an open
+ * terminal or editor writes ticks, even idle. So it used to take the day's
+ * line-up at three in the morning, the moment the counts reset, with nobody
+ * there, and by breakfast had nothing left to show (the owner's Mac, 18 and
+ * 19.10: last line at 03:47 and 04:54, none all day after).
+ *
+ * Wanted means: a person at the computer, and an AI turn under way — a
+ * session whose model time grew in the last two minutes, or an agent's turn
+ * begun (a hook mark) in the last ten minutes and not yet stopped.
+ */
+export function demandOf(carry, marks, now, cfg = DEFAULTS, present = true) {
+  if (!present) return false;
+  for (const s of Object.values(carry ?? {})) {
+    if (s && typeof s.lastIncreaseTs === 'number' && s.lastIncreaseTs > 0 && now - s.lastIncreaseTs <= cfg.active_window_ms) return true;
+  }
+  for (const m of marks ?? []) {
+    if (m && m.ev === 'UserPromptSubmit' && typeof m.ts === 'number' && now - m.ts <= 10 * 60_000) return true;
+  }
+  return false;
+}
+
+/** The hook's marks: a time, an event and an agent each, nothing else. */
+function readMarks(dir = P.activity) {
+  const out = [];
+  try {
+    for (const f of readdirSync(dir)) if (f.endsWith('.json')) { const m = readJson(join(dir, f), null); if (m) out.push(m); }
+  } catch { /* no hook marks on this machine */ }
+  return out;
+}
+
+/** When demand was last seen; a line is wanted for two minutes after. */
+const DEMAND = { at: 0, marksMtime: 0 };
+const wanted = (cfg, now = Date.now()) => now - DEMAND.at <= cfg.active_window_ms;
+function noteDemand(cfg, carry, now = Date.now()) {
+  if (demandOf(carry, readMarks(), now, cfg, presentNow(cfg)(now))) DEMAND.at = now;
+}
+
 /** Back off while there is nothing to be had; snap back the moment there is. */
 export function backoffAfter(gained, state, cfg, now) {
   if (gained > 0) return { until: 0, step: 0 };
@@ -792,6 +832,7 @@ async function cycle(cfg, device, cycleNo) {
   if (ticks.length) {
     const { items, carry, unfilled } = aggregate(ticks, readJson(P.carry, {}) ?? {}, cfg, now, presentNow(cfg));
     writeJson(P.carry, carry);
+    noteDemand(cfg, carry, now);
     const fill = fillOf(items, unfilled, readJson(P.pending, null)?.fill ?? {});
     if (items.length || Object.keys(fill).length) {
       const pending = readJson(P.pending, null) ?? { since: now, items: [] };
@@ -836,7 +877,9 @@ async function cycle(cfg, device, cycleNo) {
     const onScreen = readJson(P.current, null);
     const plan = fetchPlan(queue, cfg, fetchState, Date.now(),
       typeof onScreen?.expires_at === 'number' ? onScreen.expires_at : 0);
-    if (plan.fetch) {
+    // Only while someone is waiting on an AI: see demandOf.
+    if (!ticks.length) noteDemand(cfg, readJson(P.carry, {}) ?? {});
+    if (plan.fetch && wanted(cfg)) {
       lastFetchAt = Date.now();
       const res = await request(cfg, 'GET', `/creatives?n=${plan.n}`, undefined, device.token);
       let gained = 0;
@@ -874,7 +917,7 @@ async function cycle(cfg, device, cycleNo) {
 
     if (cfg.profile !== false) await reportProfile(cfg, device).catch(() => {});
 
-    rotateCurrent(queue, Date.now());
+    if (wanted(cfg)) rotateCurrent(queue, Date.now());
     writeJson(P.queue, queue);
   }
 
@@ -930,8 +973,13 @@ async function main() {
     const until = Date.now() + cfg.cycle_ms;
     while (Date.now() < until) {
       await sleep(Math.min(1000, until - Date.now()));
-      try { rotateLocally(); } catch { /* the next cycle rotates anyway */ }
       if (Date.now() - lastSample >= cfg.presence_sample_ms) { lastSample = Date.now(); await samplePresence(cfg).catch(() => {}); }
+      // A turn just began (the hook wrote a mark): wanted now, not at the next cycle.
+      try {
+        const mt = statSync(P.activity).mtimeMs;
+        if (mt !== DEMAND.marksMtime) { DEMAND.marksMtime = mt; noteDemand(cfg, readJson(P.carry, {}) ?? {}); }
+      } catch { /* no hook marks on this machine */ }
+      try { if (wanted(cfg)) rotateLocally(); } catch { /* the next cycle rotates anyway */ }
       const t = Date.now();
       if (lineEndingSoon(t, cfg) && t - lastFetchAt > 10_000 && t - lastEarlyAt > 10_000) { lastEarlyAt = t; break; }
     }
@@ -951,7 +999,7 @@ function lineEndingSoon(now, cfg) {
   const ends = cur && typeof cur.expires_at === 'number' ? cur.expires_at : 0;
   // And only when an ask would actually be made: early cycles that then wait
   // out a backoff are just a busier loop.
-  return ends - now < 15_000 && fetchPlan([], cfg, fetchState, now, ends).fetch;
+  return wanted(cfg, now) && ends - now < 15_000 && fetchPlan([], cfg, fetchState, now, ends).fetch;
 }
 
 function rotateLocally() {
