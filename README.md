@@ -100,8 +100,8 @@ screen, and then its line is shown to no one. So every few seconds the client as
 one number: how long since any key or the mouse was last touched, the same number that starts
 a screensaver. After five minutes the line stays, but it stops counting until you are back.
 It never learns which key or where the pointer is, and the number itself never leaves your
-machine. Where the system cannot say (a server over SSH, Linux without a desktop), it counts
-as before.
+machine. Where the system cannot say (a server over SSH, Linux without a desktop), nothing is
+counted: a machine that cannot tell whether anyone is there does not earn.
 
 **Your IP address is kept only as a code.** The server turns the address of each request
 into a keyed one-way code and keeps that, against fraud, together with the name your client
@@ -213,7 +213,10 @@ is actually working**. Time is discarded when:
 
 - more than 10 seconds pass between two ticks (the laptop was shut, the window was idle);
 - the creative changed between two ticks;
-- `cost.total_api_duration_ms` has not grown in the last 120 seconds.
+- `cost.total_api_duration_ms` has not grown in the last 120 seconds;
+- the application drawing the line is not the one in front, so another window has your
+  attention. In a terminal that is judged per application, not per window, and a terminal the
+  client has not met yet is named in `front_apps` in `~/.tick/config.json`.
 
 That last rule is the point. An open, forgotten terminal earns nothing. Faking impressions
 means genuinely burning tokens, which costs more than it pays.
