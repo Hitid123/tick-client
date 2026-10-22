@@ -83,6 +83,8 @@ This is the whole reason to pick us, so here it is without hedging.
 | Your working directory | `model.id`, e.g. `claude-opus-5` |
 | Git branches and remotes | A salted SHA-256 hash of the session id |
 | Environment variables, API keys, tokens | A device fingerprint |
+| Your machine id itself | One code for this computer: SHA-256 of the system's machine id with a fixed TICK prefix, the same for every TICK install on it, so one machine cannot pose as many publishers |
+| Which app is in front | With each report, yes or no: can this system tell someone is at the keyboard |
 | Shell history | Your country, derived from the IP of the request |
 | **Your raw `session_id`** | A one-way code of your IP address (below) |
 | | Where the line was on screen: terminal, editor, desktop strip or the Claude Code mod |
@@ -100,8 +102,14 @@ screen, and then its line is shown to no one. So every few seconds the client as
 one number: how long since any key or the mouse was last touched, the same number that starts
 a screensaver. After five minutes the line stays, but it stops counting until you are back.
 It never learns which key or where the pointer is, and the number itself never leaves your
-machine. Where the system cannot say (a server over SSH, Linux without a desktop), it counts
-as before.
+machine. Where the system cannot say (a server over SSH, Linux without a desktop), the line
+still shows and earns nothing: nobody can be shown to be there.
+
+**A terminal behind another window earns nothing.** The editor checks its own focus and the
+desktop strip its own window; a terminal cannot, so the client asks the system which app is in
+front (on a Mac its bundle id, like `com.apple.Terminal`) and counts the terminal's line only
+while a terminal, or an editor carrying one, is that app. The name never leaves your machine.
+A terminal we do not know yet can be named in `"front_apps"` in `~/.tick/config.json`.
 
 **Your IP address is kept only as a code.** The server turns the address of each request
 into a keyed one-way code and keeps that, against fraud, together with the name your client

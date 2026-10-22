@@ -71,6 +71,9 @@ const DEFAULTS = {
   // still drawn, but it is no longer counted (see presence below).
   presence_ms: 5 * 60_000,
   presence_sample_ms: 5_000,
+  // Extra names of applications that count as showing the line, on top of the
+  // built-in list (see FRONT_APPS): for a terminal nobody has met yet.
+  front_apps: [],
 };
 
 // ---------------------------------------------------------------- utilities
@@ -155,10 +158,10 @@ export function aggregate(ticks, carry, cfg = DEFAULTS, now = Date.now(), presen
         const withinGap = delta > 0 && delta <= cfg.tick_max_gap_ms;
         const active = cur.ts - lastIncreaseTs <= cfg.active_window_ms;
 
-        if (cur.cid == null && prev.cid == null && withinGap && active && present(cur.ts)) {
+        if (cur.cid == null && prev.cid == null && withinGap && active && present(cur.ts, sid)) {
           unfilled[sid] = (unfilled[sid] ?? 0) + delta;
         }
-        if (sameCreative && withinGap && active && present(cur.ts)) {
+        if (sameCreative && withinGap && active && present(cur.ts, sid)) {
           const b = (pending[cur.cid] ??= {
             rem: 0, active: 0, api: 0, first: prev.ts, last: cur.ts, model: cur.model ?? null,
           });
@@ -275,10 +278,17 @@ export function surfaceOf(sid) {
   return m ? m[1] : 'term';
 }
 
-export function buildBatch(items, salt, fill = null) {
+/**
+ * `traits`, both checked by the server before it pays (22.10): `presence`,
+ * whether this system can tell someone is at the keyboard at all (a server
+ * over SSH cannot, and is not paid); `machine`, the code above.
+ */
+export function buildBatch(items, salt, fill = null, traits = {}) {
   return {
     batch_id: randomUUID(),
     ...(fill && Object.keys(fill).length ? { fill } : {}),
+    ...(typeof traits.presence === 'boolean' ? { presence: traits.presence } : {}),
+    ...(typeof traits.machine === 'string' && /^[0-9a-f]{64}$/.test(traits.machine) ? { machine: traits.machine } : {}),
     items: items.map((i) => ({
       creative_id: i.creative_id,
       count: i.count,
@@ -365,7 +375,9 @@ function readMarks(dir = P.activity) {
 const DEMAND = { at: 0, marksMtime: 0 };
 const wanted = (cfg, now = Date.now()) => now - DEMAND.at <= cfg.active_window_ms;
 function noteDemand(cfg, carry, now = Date.now()) {
-  if (demandOf(carry, readMarks(), now, cfg, presentNow(cfg)(now))) DEMAND.at = now;
+  // Demand is a person at the computer with a model working: whether the line
+  // is in front is the money question, asked per tick, not here.
+  if (demandOf(carry, readMarks(), now, cfg, presenceNow(cfg)(now))) DEMAND.at = now;
 }
 
 /** Back off while there is nothing to be had; snap back the moment there is. */
@@ -386,11 +398,34 @@ function machineSeed() {
       const m = out.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
       if (m) return m[1];
     }
+    if (platform() === 'win32') {
+      const out = execFileSync('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'], {
+        encoding: 'utf8', timeout: 2000, windowsHide: true,
+      });
+      const m = /MachineGuid\s+REG_SZ\s+(\S+)/.exec(out);
+      if (m) return m[1];
+    }
     for (const p of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
       if (existsSync(p)) return readFileSync(p, 'utf8').trim();
     }
   } catch { /* fall through to nonce-only */ }
   return '';
+}
+
+/**
+ * One code for this computer, the same in every TICK install on it (22.10).
+ *
+ * The device fingerprint is salted per install, so a second copy of TICK in
+ * another folder was a second computer to the server, and one machine could
+ * be a hundred publishers (an audit of 22.10 ran two side by side). This is
+ * the system's own machine id hashed with a fixed TICK prefix: the server can
+ * tell two installs share a machine, and nothing else. The id itself never
+ * leaves, and the hash means nothing outside TICK. Null where the system has
+ * no id to read.
+ */
+let MACHINE;
+export function machineHash(seed = machineSeed()) {
+  return seed ? createHash('sha256').update(`tick-machine-v1|${seed}|${platform()}|${arch()}`).digest('hex') : null;
 }
 
 function loadDevice() {
@@ -452,9 +487,15 @@ async function request(cfg, method, path, body, token) {
  * `since` is when we started asking. A moment we could not ask about (before
  * the daemon started) is given the benefit of the doubt only for a minute,
  * so stopping the daemon does not turn the time it was away into paid time.
+ *
+ * A system that cannot say is not counted (22.10). It used to be the other way
+ * round — "cannot tell" read as "someone is there" — which made a headless
+ * server the cheapest publisher in the network: it cannot measure a person, so
+ * everything an agent did there was paid for. Nothing proves a person at the
+ * keyboard, nothing is billed; the line still shows.
  */
 export function isPresent(inputs, since, ts, cfg = DEFAULTS) {
-  if (inputs == null) return true;               // this system cannot say: not held against anyone
+  if (inputs == null) return false;              // this system cannot say: nothing to bill on
   let before = null, after = null;
   for (const at of inputs) {
     if (at <= ts) before = at;
@@ -474,7 +515,7 @@ function idleSampler() {
       return m ? Number(BigInt(m[1]) / 1_000_000n) : null;
     };
   }
-  if (os === 'win32') return windowsIdle();
+  if (os === 'win32') return windowsProbe().idle;
   if (os === 'linux' && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
     return async () => {
       const x = await run('xprintidle', []);
@@ -495,21 +536,34 @@ function run(cmd, args) {
 }
 
 /**
- * Windows answers through GetLastInputInfo, which only a native call reaches.
- * One PowerShell is started for the daemon's whole life and prints the idle
- * time every few seconds; starting one per question would cost half a second
- * of CPU each time.
+ * Windows answers through GetLastInputInfo and GetForegroundWindow, which only
+ * native calls reach. One PowerShell is started for the daemon's whole life and
+ * prints both every few seconds; starting one per question would cost half a
+ * second of CPU each time. The name it prints for the front window is the
+ * process's own, which is what the other platforms report too.
  */
-function windowsIdle() {
+let WIN_PROBE;
+function windowsProbe() {
+  if (WIN_PROBE) return WIN_PROBE;
   const script = `Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class TickIdle {
   [StructLayout(LayoutKind.Sequential)] struct LII { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LII p);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   public static uint Ms() { var l = new LII(); l.cbSize = (uint)Marshal.SizeOf(l); if (!GetLastInputInfo(ref l)) return uint.MaxValue; return (uint)Environment.TickCount - l.dwTime; }
+  public static uint FrontPid() { uint p; GetWindowThreadProcessId(GetForegroundWindow(), out p); return p; }
 }
 '@
-while ($true) { [Console]::Out.WriteLine([TickIdle]::Ms()); [Console]::Out.Flush(); Start-Sleep -Seconds 5 }`;
+while ($true) {
+  $idle = [TickIdle]::Ms()
+  $app = ''
+  try { $app = (Get-Process -Id ([TickIdle]::FrontPid()) -ErrorAction Stop).ProcessName } catch { }
+  [Console]::Out.WriteLine("$idle $app")
+  [Console]::Out.Flush()
+  Start-Sleep -Seconds 5
+}`;
   let latest = null, alive = true;
   try {
     const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
@@ -518,16 +572,165 @@ while ($true) { [Console]::Out.WriteLine([TickIdle]::Ms()); [Console]::Out.Flush
     ps.stdout.on('data', (d) => {
       buf += d;
       const lines = buf.split(/\r?\n/); buf = lines.pop();
-      for (const l of lines) if (/^\d+$/.test(l.trim()) && Number(l) !== 4294967295) latest = { ms: Number(l), at: Date.now() };
+      for (const l of lines) {
+        const m = /^(\d+)\s*(\S*)$/.exec(l.trim());
+        if (!m) continue;
+        // 4294967295 is what the call returns when it cannot read the clock.
+        latest = { ms: Number(m[1]) === 4294967295 ? null : Number(m[1]), app: m[2] || null, at: Date.now() };
+      }
     });
     ps.on('error', () => { alive = false; });
     ps.on('exit', () => { alive = false; });
     process.on('exit', () => { try { ps.kill(); } catch { /* gone */ } });
-  } catch { return null; }
-  return async () => {
-    if (!alive || !latest) return null;
-    return latest.ms + (Date.now() - latest.at);
+  } catch { return { idle: async () => null, front: async () => null }; }
+  WIN_PROBE = {
+    idle: async () => (alive && latest && latest.ms != null ? latest.ms + (Date.now() - latest.at) : null),
+    front: async () => (alive && latest && latest.app ? latest.app : null),
   };
+  return WIN_PROBE;
+}
+
+// ------------------------------------------------------------- frontmost app
+
+/**
+ * Which application is in front, as the system names it, or null when it
+ * cannot say.
+ *
+ * A terminal's line is a line in a window, and a window behind another one is
+ * shown to nobody: before this, an agent left working in a terminal nobody was
+ * looking at earned exactly as much as one being watched (22.10). The strip
+ * over the desktop app checks its own window and the editor checks its focus;
+ * a shell can see neither, so the daemon asks the system instead.
+ *
+ * The granularity is the application, not the window. With two terminal
+ * windows, one in front and one behind, this cannot tell them apart, and no
+ * cheap check can. It is still the difference between "the person is looking
+ * at a terminal" and "the person is looking at something else".
+ */
+
+// Applications that show a line in a terminal, or an editor carrying one, as
+// the system names them with everything but letters and digits dropped:
+// a Windows process ("WindowsTerminal", "Code"), a Linux window class
+// ("Gnome-terminal", "kitty"), or the last part of a macOS bundle identifier
+// ("com.apple.Terminal", "com.googlecode.iterm2"). macOS is asked for the
+// identifier, not the name, because the name is translated: Terminal is
+// "Терминал" on a Russian Mac. A terminal that is not here stops earning
+// until it is named, which is the safe direction; `front_apps` in
+// config.json adds to this list without replacing it.
+export const FRONT_APPS = [
+  'iterm2', 'terminal', 'wezterm', 'weztermgui', 'alacritty', 'kitty', 'ghostty', 'warp', 'warpstable',
+  'hyper', 'tabby', 'rio', 'windowsterminal', 'openconsole', 'conhost', 'cmd', 'powershell', 'pwsh',
+  'mintty', 'terminator', 'tilix', 'konsole', 'gnometerminal', 'gnometerminalserver', 'ptyxis',
+  'xfce4terminal', 'xterm', 'urxvt', 'foot', 'blackbox', 'wave',
+  'code', 'codeinsiders', 'vscode', 'vscodeinsiders', 'visualstudiocode', 'cursor', 'windsurf', 'zed',
+];
+// Whole identifiers whose last part says nothing: Cursor's Mac bundle.
+const FRONT_IDS = ['com.todesktop.230313mzl4w4u92'];
+// JetBrains IDEs, each named its own way (com.jetbrains.intellij, idea64,
+// jetbrains-pycharm): all carry a terminal.
+const FRONT_PREFIXES = ['com.jetbrains.', 'jetbrains', 'idea', 'pycharm', 'webstorm', 'goland', 'rider', 'clion', 'phpstorm', 'rubymine'];
+
+const cleanApp = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Does this application show a terminal, or an editor that carries one? */
+export function frontShowsLine(app, cfg = DEFAULTS) {
+  const raw = String(app ?? '').trim().toLowerCase();
+  if (!raw) return false;
+  if (FRONT_IDS.includes(raw)) return true;
+  if (FRONT_PREFIXES.some((p) => raw.startsWith(p))) return true;
+  const keys = [cleanApp(raw), cleanApp(raw.split('.').at(-1))].filter(Boolean);
+  if (keys.some((k) => FRONT_APPS.includes(k))) return true;
+  const extra = Array.isArray(cfg?.front_apps) ? cfg.front_apps : [];
+  return extra.some((n) => String(n).trim().toLowerCase() === raw || keys.includes(cleanApp(n)));
+}
+
+/** The front application, in the system's own name for it, or null. */
+function frontSampler() {
+  const os = platform();
+  if (os === 'darwin') {
+    // lsappinfo is the only cheap way in: AppleScript would ask the person for
+    // permission to control the terminal, and a permission prompt is not a
+    // check. Reading the window server's own idea of the front app is.
+    // The bundle identifier, not the name: the name is translated
+    // (checked on the owner's Mac, 22.10: `"CFBundleIdentifier"="com.anthropic.claudefordesktop"`).
+    return async () => {
+      const asn = (await run('lsappinfo', ['front']))?.trim();
+      if (!asn) return null;
+      const info = await run('lsappinfo', ['info', '-only', 'bundleid', asn]);
+      const m = /"CFBundleIdentifier"\s*=\s*"([^"]+)"/.exec(info ?? '');
+      return m ? m[1] : null;
+    };
+  }
+  if (os === 'win32') return windowsProbe().front;
+  if (os === 'linux' && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
+    // Nothing portable on Linux: Sway and Hyprland answer their own
+    // compositors, X11 answers through xprop (or xdotool), and a desktop that
+    // does neither cannot say. Cannot say means not counted, the same rule as
+    // presence.
+    return async () => {
+      const sway = await run('swaymsg', ['-t', 'get_tree']);
+      if (sway) {
+        try {
+          const walk = (n) => (n?.focused ? n : (n?.nodes ?? []).concat(n?.floating_nodes ?? []).map(walk).find(Boolean));
+          const hit = walk(JSON.parse(sway));
+          if (hit?.app_id || hit?.name) return hit.app_id ?? hit.name;
+        } catch { /* not Sway's JSON */ }
+      }
+      const hy = await run('hyprctl', ['activewindow', '-j']);
+      if (hy) {
+        try { const w = JSON.parse(hy); if (w?.class) return w.class; } catch { /* not Hyprland's JSON */ }
+      }
+      const id = /window id # (0x[0-9a-f]+)/.exec(await run('xprop', ['-root', '_NET_ACTIVE_WINDOW']) ?? '');
+      if (id) {
+        const cls = await run('xprop', ['-id', id[1], 'WM_CLASS']);
+        const m = /=\s*"[^"]*",\s*"([^"]*)"/.exec(cls ?? '');
+        if (m) return m[1];
+      }
+      const x = (await run('xdotool', ['getactivewindow', 'getwindowclassname']))?.trim();
+      return x || null;
+    };
+  }
+  return null;
+}
+
+/** The front application over time, kept for an hour like presence. */
+const FRONT = { entries: null, sampler: undefined, misses: 0 };
+// Older than a few samples and we cannot say what was in front: unknown.
+const FRONT_STALE_MS = 20_000;
+
+async function sampleFront() {
+  if (FRONT.sampler === undefined) FRONT.sampler = frontSampler();
+  if (!FRONT.sampler) return;
+  const app = await FRONT.sampler().catch(() => null);
+  const now = Date.now();
+  if (app == null) {
+    // A system that cannot say is never counted, so stop asking after a while.
+    if (FRONT.entries == null && ++FRONT.misses >= 6) FRONT.sampler = null;
+    return;
+  }
+  if (FRONT.entries == null) FRONT.entries = [];
+  const last = FRONT.entries.at(-1);
+  if (!last || last.app !== app || now - last.at >= 10_000) FRONT.entries.push({ at: now, app });
+  const keep = now - 60 * 60_000;
+  while (FRONT.entries.length > 1 && FRONT.entries[1].at < keep) FRONT.entries.shift();
+}
+
+/** Which application was in front at `ts`, or null when that is unknown. */
+function frontAt(ts) {
+  const entries = FRONT.entries;
+  if (!entries?.length) return null;
+  let hit = null;
+  for (const e of entries) { if (e.at <= ts) hit = e; else break; }
+  // Just before the first look (the daemon was starting): the first answer
+  // stands for a minute back, the same grace presence gives.
+  if (!hit) return entries[0].at - ts <= 60_000 ? entries[0].app : null;
+  return ts - hit.at <= FRONT_STALE_MS ? hit.app : null;
+}
+
+/** One pass of what the system says: presence, and the application in front. */
+async function sampleSystem(cfg) {
+  await samplePresence(cfg).catch(() => {});
+  await sampleFront().catch(() => {});
 }
 
 /** What the daemon knows about presence: the moments of last input, kept for an hour. */
@@ -538,7 +741,8 @@ async function samplePresence(cfg) {
   if (!PRESENCE.sampler) return;
   const idle = await PRESENCE.sampler().catch(() => null);
   if (idle == null || !Number.isFinite(idle) || idle < 0) {
-    // A system that never answers is one that cannot: stop asking, count as before.
+    // A system that never answers is one that cannot: stop asking. Presence
+    // stays unknown, and unknown is not counted (see isPresent).
     if (PRESENCE.inputs == null && ++PRESENCE.misses >= 6) PRESENCE.sampler = null;
     return;
   }
@@ -551,7 +755,18 @@ async function samplePresence(cfg) {
   while (PRESENCE.inputs.length > 1 && PRESENCE.inputs[1] < keep) PRESENCE.inputs.shift();
 }
 
-const presentNow = (cfg) => (ts) => isPresent(PRESENCE.inputs, PRESENCE.since, ts, cfg);
+/** Is a person at this computer, whatever window is drawing? */
+const presenceNow = (cfg) => (ts) => isPresent(PRESENCE.inputs, PRESENCE.since, ts, cfg);
+
+/**
+ * What a tick of this stream may be billed on: a person at the computer, and —
+ * for the surfaces that draw inside a terminal — a terminal in front.
+ */
+const presentNow = (cfg) => (ts, sid) => {
+  if (!presenceNow(cfg)(ts)) return false;
+  // The strip and the editor watch their own windows; these two cannot.
+  return surfaceOf(sid) === 'term' || surfaceOf(sid) === 'oc' ? frontShowsLine(frontAt(ts), cfg) : true;
+};
 
 /**
  * Whether this computer is a virtual machine, from what the system says about
@@ -862,7 +1077,8 @@ async function cycle(cfg, device, cycleNo) {
   const hasFill = Object.values(pending?.fill ?? {}).some((f) => f.filled_ms + f.unfilled_ms > 0);
   if ((pending?.items?.length || hasFill) && now - (pending.since ?? 0) >= cfg.batch_every_ms) {
     const outbox = readJson(P.outbox, []) ?? [];
-    outbox.push(buildBatch(pending.items ?? [], device.salt, pending.fill));
+    MACHINE ??= machineHash();
+    outbox.push(buildBatch(pending.items ?? [], device.salt, pending.fill, { presence: PRESENCE.inputs != null, machine: MACHINE }));
     writeJson(P.outbox, outbox);
     try { unlinkSync(P.pending); } catch { /* already gone */ }
   }
@@ -957,7 +1173,7 @@ async function main() {
   const device = loadDevice();
   let lastTickSeen = Date.now();
   let lastSample = 0;
-  await samplePresence(cfg).catch(() => {});
+  await sampleSystem(cfg);
 
   for (let n = 1; ; n++) {
     try {
@@ -992,7 +1208,7 @@ async function main() {
     const until = Date.now() + cfg.cycle_ms;
     while (Date.now() < until) {
       await sleep(Math.min(1000, until - Date.now()));
-      if (Date.now() - lastSample >= cfg.presence_sample_ms) { lastSample = Date.now(); await samplePresence(cfg).catch(() => {}); }
+      if (Date.now() - lastSample >= cfg.presence_sample_ms) { lastSample = Date.now(); await sampleSystem(cfg); }
       // A turn just began (the hook wrote a mark): wanted now, not at the next cycle.
       try {
         const mt = statSync(P.activity).mtimeMs;
