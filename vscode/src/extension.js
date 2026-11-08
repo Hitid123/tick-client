@@ -36,6 +36,7 @@ const P = {
   shipped: path.join(STATE, 'panel-files.json'),
   spinner: path.join(STATE, 'panel-spinner.json'),
   supply: path.join(STATE, 'supply.json'),
+  presence: path.join(STATE, 'presence'),
 };
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -900,10 +901,30 @@ function tooltipFor(view) {
   return md;
 }
 
+/**
+ * Someone is working in this window: the editor's own word for it
+ * (WindowState.active, set on keyboard and mouse in the window, cleared soon
+ * after they stop; never by an agent's edits). Written for the daemon, which
+ * counts nothing unless a person is at the computer and asks the system for
+ * that; where the system cannot answer (PowerShell blocked on a Windows PC,
+ * 22.10) this is the answer. One small file per window, every few seconds at
+ * most, holding a time and nothing else.
+ */
+let presenceWritten = 0;
+function notePresence(now = Date.now()) {
+  if (vscode.window.state.active !== true || now - presenceWritten < 5000) return;
+  presenceWritten = now;
+  try {
+    fs.mkdirSync(P.presence, { recursive: true });
+    fs.writeFileSync(path.join(P.presence, `vsc-${process.pid}.json`), JSON.stringify({ at: now }));
+  } catch { /* the next cycle writes it */ }
+}
+
 function cycle(context, channel) {
   cycleNo += 1;
   const now = Date.now();
   if (vscode.window.state.focused) lastFocusedTs = now;
+  notePresence(now);
 
   if (!vscode.workspace.getConfiguration('tick').get('enabled', true)) {
     item.hide();
@@ -1142,7 +1163,9 @@ function activate(context) {
   if (vscode.window.state.focused) lastFocusedTs = Date.now();
   context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
     if (state.focused) lastFocusedTs = Date.now();
+    notePresence();
   }));
+  context.subscriptions.push({ dispose: () => { try { fs.rmSync(path.join(P.presence, `vsc-${process.pid}.json`), { force: true }); } catch { /* gone */ } } });
 
   context.subscriptions.push(
     vscode.commands.registerCommand('tick.setUp', () => offerSetUp(context, channel, { force: true })),

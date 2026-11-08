@@ -35,6 +35,8 @@ const P = {
   activity: join(STATE, 'activity'),
   updated: join(STATE, 'updated.json'),
   supply: join(STATE, 'supply.json'),
+  presence: join(STATE, 'presence'),
+  presenceOk: join(STATE, 'presence-ok.json'),
 };
 
 const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
@@ -583,10 +585,17 @@ while ($true) {
     ps.on('exit', () => { alive = false; });
     process.on('exit', () => { try { ps.kill(); } catch { /* gone */ } });
   } catch { return { idle: async () => null, front: async () => null }; }
-  WIN_PROBE = {
-    idle: async () => (alive && latest && latest.ms != null ? latest.ms + (Date.now() - latest.at) : null),
-    front: async () => (alive && latest && latest.app ? latest.app : null),
-  };
+  // PowerShell compiles the native call before its first answer: a minute on
+  // a slow PC with the antivirus looking (a Windows user's, 22.10, whose
+  // presence was given up on after half a minute). Until it has answered or
+  // died, it is starting, not failing.
+  const startedAt = Date.now();
+  const starting = () => alive && !latest && Date.now() - startedAt < 180_000;
+  const idle = async () => (alive && latest && latest.ms != null ? latest.ms + (Date.now() - latest.at) : null);
+  idle.starting = starting;
+  const front = async () => (alive && latest && latest.app ? latest.app : null);
+  front.starting = starting;
+  WIN_PROBE = { idle, front };
   return WIN_PROBE;
 }
 
@@ -705,7 +714,7 @@ async function sampleFront() {
   const now = Date.now();
   if (app == null) {
     // A system that cannot say is never counted, so stop asking after a while.
-    if (FRONT.entries == null && ++FRONT.misses >= 6) FRONT.sampler = null;
+    if (FRONT.entries == null && !FRONT.sampler.starting?.() && ++FRONT.misses >= 6) FRONT.sampler = null;
     return;
   }
   if (FRONT.entries == null) FRONT.entries = [];
@@ -738,21 +747,62 @@ const PRESENCE = { inputs: null, since: Date.now(), sampler: undefined, misses: 
 
 async function samplePresence(cfg) {
   if (PRESENCE.sampler === undefined) PRESENCE.sampler = idleSampler();
-  if (!PRESENCE.sampler) return;
-  const idle = await PRESENCE.sampler().catch(() => null);
-  if (idle == null || !Number.isFinite(idle) || idle < 0) {
-    // A system that never answers is one that cannot: stop asking. Presence
-    // stays unknown, and unknown is not counted (see isPresent).
-    if (PRESENCE.inputs == null && ++PRESENCE.misses >= 6) PRESENCE.sampler = null;
-    return;
+  let at = null;
+  if (PRESENCE.sampler) {
+    const idle = await PRESENCE.sampler().catch(() => null);
+    if (idle == null || !Number.isFinite(idle) || idle < 0) {
+      // A system that never answers is one that cannot: stop asking. Presence
+      // stays unknown, and unknown is not counted (see isPresent). One still
+      // starting up (PowerShell on Windows) is waited for.
+      if (PRESENCE.inputs == null && !PRESENCE.sampler.starting?.() && ++PRESENCE.misses >= 6) PRESENCE.sampler = null;
+    } else {
+      at = Date.now() - idle;
+    }
   }
-  const now = Date.now();
-  const at = now - idle;
-  if (PRESENCE.inputs == null) { PRESENCE.inputs = []; PRESENCE.since = now; }
+  // The editor's own word, wherever the system's is missing or late: VS Code
+  // and its forks know when someone is working in their window (the
+  // extension writes state/presence, editorInputAt). On a Windows PC where
+  // PowerShell is blocked this is the only answer there is.
+  for (const a of [at, editorInputAt()]) if (a != null) noteInput(a, cfg);
+}
+
+function noteInput(at, cfg, now = Date.now()) {
+  if (PRESENCE.inputs == null) {
+    PRESENCE.inputs = []; PRESENCE.since = now;
+    // Remembered across restarts, so the first report after one does not say
+    // "cannot tell" about a system that can (buildBatch).
+    try { writeJson(P.presenceOk, { at: now }); } catch { /* next time */ }
+  }
   const last = PRESENCE.inputs.at(-1);
   if (last == null || at - last > 1000) PRESENCE.inputs.push(at);
   const keep = now - 60 * 60_000 - cfg.presence_ms;
   while (PRESENCE.inputs.length > 1 && PRESENCE.inputs[1] < keep) PRESENCE.inputs.shift();
+}
+
+/**
+ * The latest moment someone worked in an editor window, from the files the
+ * editor extension keeps in state/presence (one per window, `{ at }`), or
+ * null. Written only on the editor's own sign of a person (WindowState.active),
+ * never on an agent's edits. An hour old is too old to say anything.
+ */
+export function editorInputAt(dir = P.presence, now = Date.now()) {
+  let best = null;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      const at = readJson(join(dir, f), null)?.at;
+      if (typeof at !== 'number' || at > now + 5_000 || now - at > 60 * 60_000) continue;
+      if (best == null || at > best) best = Math.min(at, now);
+    }
+  } catch { /* no editor has written one */ }
+  return best;
+}
+
+/** Can this system tell someone is there: now, or in the last week (a restart forgets until its first look). */
+function presenceKnown(now = Date.now()) {
+  if (PRESENCE.inputs != null) return true;
+  const ok = readJson(P.presenceOk, null)?.at;
+  return typeof ok === 'number' && now - ok < 7 * 86_400_000;
 }
 
 /** Is a person at this computer, whatever window is drawing? */
@@ -1046,7 +1096,7 @@ async function reportProfile(cfg, device, now = Date.now()) {
   // Looked at hourly at most, and sent when a day has passed or something changed.
   if (last && now - (last.checked ?? last.at ?? 0) < 3_600_000) return;
   VM ??= isVirtualMachine();
-  const profile = machineProfile(now, process.env, P.activity, { vm: VM, presence: PRESENCE.inputs != null });
+  const profile = machineProfile(now, process.env, P.activity, { vm: VM, presence: presenceKnown(now) });
   const sig = JSON.stringify({ ...profile, agents: Object.keys(profile.agents).sort() });
   if (last && now - (last.at ?? 0) < 86_400_000 && last.sig === sig) { writeJson(P.profile, { ...last, checked: now }); return; }
   const res = await request(cfg, 'POST', '/devices/profile', profile, device.token);
@@ -1078,7 +1128,7 @@ async function cycle(cfg, device, cycleNo) {
   if ((pending?.items?.length || hasFill) && now - (pending.since ?? 0) >= cfg.batch_every_ms) {
     const outbox = readJson(P.outbox, []) ?? [];
     MACHINE ??= machineHash();
-    outbox.push(buildBatch(pending.items ?? [], device.salt, pending.fill, { presence: PRESENCE.inputs != null, machine: MACHINE }));
+    outbox.push(buildBatch(pending.items ?? [], device.salt, pending.fill, { presence: presenceKnown(), machine: MACHINE }));
     writeJson(P.outbox, outbox);
     try { unlinkSync(P.pending); } catch { /* already gone */ }
   }

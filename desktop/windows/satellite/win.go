@@ -730,6 +730,21 @@ func show(c *Creative, cw *claudeWin, s Settings) {
 
 // ------------------------------------------------------------------ the loop
 
+// What the loop reads from disk, read at most twice a second. The loop runs
+// every 60 ms to follow a moving window, and reading every file on each pass
+// (config, the activity folder, Claude Code's whole settings.json) is what
+// kept the Mac strip at 7.5% of a core around the clock (08.11). Half a second
+// late on a turn that just began is invisible; the window is still followed at
+// full speed.
+var (
+	readAt       float64
+	readFor      string
+	readSettings Settings
+	readSessions []Session
+	readMod      bool
+	readCreative *Creative
+)
+
 func loop() {
 	// Only over an app of ours that is in front: an ad floating over some other
 	// app would be showing to nobody we can count, and in the way of everything.
@@ -744,11 +759,18 @@ func loop() {
 		offscreen()
 		activeHost = *h
 	}
-	s := loadSettings(paths, activeHost)
-	var sessions []Session
-	if s.Enabled {
-		sessions = desktopSessions(paths.Activity, nowMs(), append([]string{activeHost.Tag}, activeHost.Also...)...)
+	if t := nowMs(); t-readAt >= 500 || readFor != activeHost.Tag {
+		readAt, readFor = t, activeHost.Tag
+		readSettings = loadSettings(paths, activeHost)
+		readSessions = nil
+		if readSettings.Enabled {
+			readSessions = desktopSessions(paths.Activity, t, append([]string{activeHost.Tag}, activeHost.Also...)...)
+		}
+		readMod = activeHost.Tag == "cd" && modDrawsInClaude(paths, claudeSettingsPath(), t)
+		readCreative = currentCreative(paths.Current, t)
 	}
+	s := readSettings
+	sessions := readSessions
 	if len(sessions) == 0 {
 		offscreen()
 		return
@@ -756,7 +778,7 @@ func loop() {
 	// The TICK mod draws the line inside the Claude app itself and says so
 	// every few seconds; the strip steps aside: one display, one impression.
 	if activeHost.Tag == "cd" {
-		if modDrawsInClaude(paths, claudeSettingsPath(), nowMs()) {
+		if readMod {
 			logOnce("mod", "standing aside: the TICK mod draws the line in the Claude app")
 			offscreen()
 			return
@@ -773,7 +795,7 @@ func loop() {
 		return
 	}
 	now := nowMs()
-	c := currentCreative(paths.Current, now)
+	c := readCreative
 	if c == nil {
 		// Usually not a fault: nothing is sold for this device right now, or
 		// the day's cap per campaign is used up. Said once per stretch, so
@@ -881,6 +903,7 @@ func wndProc(w uintptr, m uint32, wp, lp uintptr) (ret uintptr) {
 			// Where it actually landed after clamping, so a strip pushed
 			// against an edge does not remember a position past it.
 			_ = savePlacement(paths, activeHost, appliedDX)
+			readAt = 0 // the new place, read back at once
 			dragDX = nil
 		} else if creative != nil && creative.ClickURL != "" {
 			// The server counts the click at the other end of this redirect,

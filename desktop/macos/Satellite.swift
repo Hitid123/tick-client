@@ -104,6 +104,20 @@ func readJSON(_ path: String) -> [String: Any]? {
 
 func nowMs() -> Double { (Date().timeIntervalSince1970 * 1000).rounded() }
 
+/// A file read at most every `ttl` milliseconds. The loop runs sixteen times a
+/// second to follow a moving window, and reading every file on each pass cost
+/// 7.5% of a CPU core around the clock on the owner's Mac (08.11), with no
+/// app of ours even open. Half a second late on a new ad or a turn that just
+/// began is invisible; the window is still followed at full speed.
+var jsonCache: [String: (at: Double, value: [String: Any]?)] = [:]
+func readJSONCached(_ path: String, ttl: Double = 500) -> [String: Any]? {
+  let now = nowMs()
+  if let hit = jsonCache[path], now - hit.at < ttl { return hit.value }
+  let value = readJSON(path)
+  jsonCache[path] = (now, value)
+  return value
+}
+
 // ------------------------------------------------------------------ settings
 
 /// Where the strip sits. Read every cycle, so a change shows up within a second.
@@ -129,19 +143,20 @@ struct Settings { var enabled = true; var dx: CGFloat = 0; var dy: CGFloat = 18.
 /// the host's own placement file wins over both.
 func settings(_ host: Host) -> Settings {
   var s = Settings(dy: host.dy)
-  if let d = readJSON(CONFIG)?["desktop"] as? [String: Any] {
+  if let d = readJSONCached(CONFIG, ttl: 1000)?["desktop"] as? [String: Any] {
     if let v = d["enabled"] as? Bool { s.enabled = v }
     let own = host.tag == CLAUDE.tag ? d : (d[host.name.lowercased()] as? [String: Any] ?? [:])
     if let v = own["dx"] as? Double { s.dx = CGFloat(v) }
     // Within the row and nowhere else, whatever is typed into the file.
     if let v = own["dy"] as? Double { s.dy = min(max(CGFloat(v), 12), 32) }
   }
-  if let v = readJSON(inHome(host.placement))?["dx"] as? Double { s.dx = CGFloat(v) }
+  if let v = readJSONCached(inHome(host.placement), ttl: 1000)?["dx"] as? Double { s.dx = CGFloat(v) }
   return s
 }
 
 func savePlacement(_ host: Host, dx: CGFloat) {
   let path = inHome(host.placement)
+  jsonCache[path] = nil
   guard let data = try? JSONSerialization.data(withJSONObject: ["dx": Double(dx.rounded())]) else { return }
   let tmp = path + ".tmp"
   if FileManager.default.createFile(atPath: tmp, contents: data) {
@@ -156,21 +171,36 @@ struct Session { let id: String; let ts: Double; let working: Bool; let lingerin
 
 /// Desktop sessions only: a terminal or editor session has its own line, and
 /// counting it here as well would bill one display twice.
-func desktopSessions(_ host: Host) -> [Session] {
-  let names = (try? FileManager.default.contentsOfDirectory(atPath: ACTIVITY)) ?? []
+struct Mark { let id: String; let ag: String; let ts: Double; let ev: String }
+var marksAt: Double = -1e18
+var marks: [Mark] = []
+
+/// Every agent's mark, the folder read once for all hosts and at most twice a
+/// second (see readJSONCached).
+func allMarks() -> [Mark] {
   let now = nowMs()
-  var out: [Session] = []
-  for name in names where name.hasSuffix(".json") {
+  if now - marksAt < 500 { return marks }
+  marksAt = now
+  let names = (try? FileManager.default.contentsOfDirectory(atPath: ACTIVITY)) ?? []
+  marks = names.compactMap { name in
+    guard name.hasSuffix(".json") else { return nil }
     let id = String(name.dropLast(5))
     guard id.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
           let m = readJSON((ACTIVITY as NSString).appendingPathComponent(name)),
-          (m["ag"] as? String) == host.tag,
-          let ts = m["ts"] as? Double, let ev = m["ev"] as? String else { continue }
-    let working = ev == "UserPromptSubmit" && now - ts <= MAX_TURN_MS
-    let lingering = ev == "Stop" && now - ts <= LINGER_MS
-    if working || lingering { out.append(Session(id: id, ts: ts, working: working, lingering: lingering)) }
+          let ag = m["ag"] as? String, let ts = m["ts"] as? Double, let ev = m["ev"] as? String else { return nil }
+    return Mark(id: id, ag: ag, ts: ts, ev: ev)
   }
-  return out
+  return marks
+}
+
+func desktopSessions(_ host: Host) -> [Session] {
+  let now = nowMs()
+  return allMarks().compactMap { m in
+    guard m.ag == host.tag else { return nil }
+    let working = m.ev == "UserPromptSubmit" && now - m.ts <= MAX_TURN_MS
+    let lingering = m.ev == "Stop" && now - m.ts <= LINGER_MS
+    return working || lingering ? Session(id: m.id, ts: m.ts, working: working, lingering: lingering) : nil
+  }
 }
 
 struct Creative: Equatable {
@@ -186,7 +216,7 @@ func safeURL(_ value: Any?) -> URL? {
 }
 
 func currentCreative() -> Creative? {
-  guard let c = readJSON(CURRENT), let text = c["text"] as? String, !text.isEmpty else { return nil }
+  guard let c = readJSONCached(CURRENT), let text = c["text"] as? String, !text.isEmpty else { return nil }
   if let exp = c["expires_at"] as? Double, exp < nowMs() { return nil }
   return Creative(id: c["creative_id"] as? String, text: text, promo: c["promo_code"] as? String,
                   accent: c["accent"] as? String,
@@ -611,7 +641,7 @@ func modDrawsInClaude() -> Bool {
     pluginEnabled = enabled.contains { $0.key.hasPrefix("tick@") && ($0.value as? Bool) == true }
   }
   if pluginEnabled { return true }
-  if let ts = readJSON(inHome("state/mod-desktop.json"))?["ts"] as? Double, now - ts < 10_000 { return true }
+  if let ts = readJSONCached(inHome("state/mod-desktop.json"), ttl: 1000)?["ts"] as? Double, now - ts < 10_000 { return true }
   return false
 }
 
@@ -644,6 +674,15 @@ func note(_ what: String) {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // no Dock icon, no menu, never frontmost
+
+// One strip per computer. The login item keeps one running, and opening
+// TICK.app by hand started a second beside it (08.11): two strips over one
+// window, each writing ticks for the same session. The newcomer leaves.
+if let me = NSRunningApplication.current.bundleIdentifier,
+   NSRunningApplication.runningApplications(withBundleIdentifier: me)
+     .contains(where: { $0.processIdentifier != getpid() && !$0.isTerminated }) {
+  exit(0)
+}
 
 let strip = Strip()
 var lastTick: Double = 0
